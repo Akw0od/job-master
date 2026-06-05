@@ -1,0 +1,3 @@
+Example Risk Engineer-style JD
+
+Build data workflows for risk monitoring, controls, and operational decision support. Use SQL and Python to validate datasets, forecast operational trends, build dashboards, monitor KPIs and risk indicators, and translate ambiguous data into practical recommendations for business and technical teams.

@@ -1,0 +1,3 @@
+Example Forward Deployed Engineer-style JD
+
+Work directly with customers to understand workflows and turn ambiguous problems into deployed software. Prototype quickly, integrate APIs, build full-stack applications, operate production systems, and communicate technical tradeoffs to users and internal teams.

@@ -1,0 +1,123 @@
+{
+  "sde": {
+    "label": "Software Development Engineer",
+    "keywords": [
+      "sde",
+      "software",
+      "engineer",
+      "backend",
+      "frontend",
+      "full-stack",
+      "api",
+      "distributed",
+      "scalable",
+      "python",
+      "typescript",
+      "data structures",
+      "debugging",
+      "testing",
+      "production",
+      "cloud",
+      "deployment",
+      "customer"
+    ],
+    "preferred_evidence": [
+      "VetCite-Bench",
+      "Voyage AI / Voyage for Vets",
+      "FitScan",
+      "Husky Paths"
+    ]
+  },
+  "risk_engineer": {
+    "label": "Risk Engineer",
+    "keywords": [
+      "risk",
+      "controls",
+      "monitoring",
+      "kpi",
+      "indicator",
+      "forecasting",
+      "validation",
+      "sql",
+      "python",
+      "dashboard",
+      "operational",
+      "data",
+      "decision support",
+      "reliability",
+      "analytics",
+      "quantitative"
+    ],
+    "preferred_evidence": [
+      "Voyage AI / Voyage for Vets",
+      "Quantitative Research Internship",
+      "VetCite-Bench",
+      "FitScan"
+    ]
+  },
+  "fde": {
+    "label": "Forward Deployed Engineer",
+    "keywords": [
+      "forward deployed",
+      "fde",
+      "customer",
+      "workflow",
+      "prototype",
+      "ambiguous",
+      "full-stack",
+      "api",
+      "integration",
+      "production",
+      "deployment",
+      "solutions",
+      "onsite",
+      "implementation",
+      "user",
+      "operate"
+    ],
+    "preferred_evidence": [
+      "Voyage AI / Voyage for Vets",
+      "Husky Paths",
+      "Multi-Agent Outbound Pipeline",
+      "FitScan"
+    ]
+  },
+  "ai_agent_engineer": {
+    "label": "AI / LLM Agent Engineer",
+    "keywords": [
+      "llm",
+      "ai engineer",
+      "ai-powered",
+      "model-powered",
+      "agent",
+      "rag",
+      "retrieval",
+      "embeddings",
+      "evaluation",
+      "evals",
+      "benchmark",
+      "model routing",
+      "model integration",
+      "prompt",
+      "tool use",
+      "openai",
+      "claude",
+      "gemini",
+      "huggingface",
+      "automation",
+      "human in the loop",
+      "human-in-the-loop",
+      "guardrails",
+      "latency",
+      "cost",
+      "reliability",
+      "quality"
+    ],
+    "preferred_evidence": [
+      "Voyage AI / Voyage for Vets",
+      "VetCite-Bench",
+      "Multi-Agent Outbound Pipeline",
+      "FitScan"
+    ]
+  }
+}
