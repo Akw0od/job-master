@@ -22,7 +22,8 @@ Do not add facts that the candidate has not confirmed.
     "graduation_date_dropdown_rule": "If the exact graduation date option is unavailable, choose the closest available new-grad option only when the candidate has confirmed it.",
     "github_profile": "https://github.com/example",
     "target_start_preference": "Use the role's preferred new-grad start window when the candidate has not specified another date.",
-    "resume_format": "One-page PDF by default, with concise section lines, horizontal rules, Experience before Projects, and no decorative color.",
+    "resume_format": "One-page PDF by default, following the candidate's chosen reference resume layout: compact header, horizontal rules, Experience before Projects, aligned left edges, no decorative color, and consistent indentation.",
+    "resume_density_rule": "Use substantive Experience entries and Project Experience sections: aim for at least four visual text lines for a main experience entry, at least four bullets per selected project, and bullets that usually wrap to about two visual lines while keeping the PDF on one page.",
     "resume_reuse_rule": "Reuse the closest role archetype resume when the JD is materially similar; rewrite only when the JD changes the evidence priority.",
     "application_tracker": "After every confirmed submission, update the candidate's chosen tracker instead of creating redundant spreadsheets.",
     "experience_preference": "Use the candidate's current most relevant experience as the primary experience in tailored resumes."

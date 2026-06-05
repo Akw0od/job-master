@@ -14,6 +14,7 @@ The repository version is public-safe: `data/profile_context.md` contains exampl
 - Writes `autofill_data.json` for browser-assisted form filling.
 - Enforces a final human approval gate before submission.
 - Encourages one-page resume reuse by archetype when JDs are materially similar.
+- Preserves the candidate's reference resume layout: horizontal rules, aligned sections, no decorative color, Experience before Projects, and denser experience/project bullets that still fit on one page.
 
 ## Repository Layout
 

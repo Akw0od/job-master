@@ -62,6 +62,7 @@ Copy-Item -Recurse .\resume-application-agent-skill "$env:USERPROFILE\.codex\ski
 * 生成 `application_packet.md`：岗位重点、命中的证据、可复用 bullet、申请回答草稿
 * 生成 `autofill_data.json`：姓名、链接、岗位 track、提交安全门等结构化字段
 * 帮你保持一页简历思路：相似 JD 复用同一 archetype，只有重点变化很大时才重写
+* 按候选人自己的参考简历排版：横线、对齐、无装饰色、Experience before Projects，并在一页内让 experience / project bullet 更饱满
 * 遇到 final submit、work authorization、sponsorship、EEOC 等字段时停下来让本人确认
 
 它适合：

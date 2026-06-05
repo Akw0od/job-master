@@ -23,7 +23,7 @@ This skill turns a target JD into an application packet: tailored resume focus, 
 4. For every JD, generate a packet first and ask the user to review it.
 5. Browser automation may fill fields after review, then stop at the final review screen.
 6. Final submission requires explicit approval for that exact company, role, and application.
-7. Default resume output is a clean one-page PDF with no decorative color, Experience before Projects, compact horizontal section rules, and role-specific evidence reuse.
+7. Default resume output is a clean one-page PDF with no decorative color, Experience before Projects, compact horizontal section rules, aligned left edges, and role-specific evidence reuse.
 8. After a confirmed submission, update the candidate's chosen tracker; do not create spreadsheet trackers unless explicitly requested.
 
 ## Quickstart
@@ -77,6 +77,17 @@ Use the packet to create a final resume version. Keep the same facts, but change
 Use the candidate's current most relevant experience as the primary current experience by default. Keep location and dates aligned to `data/profile_context.md`. Only foreground older experience when a JD specifically needs that history and the resume has space.
 
 For similar JDs, reuse the closest archetype resume and make only small edits. Rewrite the PDF only when the JD materially changes the top evidence, required stack, or role family.
+
+### 4.1 Resume PDF Layout Rules
+
+Follow the candidate's chosen reference resume format as a layout target, not as a source of personal content:
+
+- Keep the final PDF to exactly one page.
+- Use the same clean structure: compact header, horizontal section rules, left-aligned section labels, Experience before Projects, no decorative color, and consistent indentation.
+- Make Experience entries more substantive than a sparse draft. Aim for at least four visual text lines per main experience entry when the JD justifies that experience.
+- For Project Experience, each selected project should normally have at least four bullet points.
+- Each project bullet should be substantial enough to wrap to about two visual lines in the reference layout, while staying factual and JD-relevant.
+- If the one-page constraint is tight, preserve alignment first, then remove the least relevant project or bullet group before expanding to a second page.
 
 ### 5. Fill Forms Safely
 
