@@ -71,7 +71,9 @@ Copy-Item -Recurse .\resume-application-agent-skill "$env:USERPROFILE\.codex\ski
 * SDE / Full-stack / AI Engineer / Risk Engineer / FDE 这类岗位
 * 需要根据 JD 组合不同项目经历的简历
 * Greenhouse、Ashby、Lever 这类表单填到最终检查前
-* 想把投递记录写进 Notion / 本地 tracker，而不是每次重写一堆 PDF
+* 想把投递记录写进 Notion、飞书多维表格或本地 tracker，而不是每次重写一堆 PDF
+
+面向中国用户时，默认推荐用飞书多维表格作为投递 tracker / 轻量数据库；如果产品化成 SaaS，再用 PostgreSQL / MySQL 做真实后端数据库，并把飞书作为人工审核和运营界面。
 
 它不适合：
 
@@ -91,7 +93,7 @@ Copy-Item -Recurse .\resume-application-agent-skill "$env:USERPROFILE\.codex\ski
 * 候选人信息：姓名、地点、邮箱、LinkedIn、GitHub
 * 教育经历：学校、专业、毕业时间、课程
 * 项目/实习 evidence：每个项目的 tags、summary、bullets
-* 默认偏好：一页简历、复用规则、tracker 位置
+* 默认偏好：一页简历、复用规则、tracker 位置、是否使用飞书多维表格
 
 铁律：
 

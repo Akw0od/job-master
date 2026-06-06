@@ -25,7 +25,12 @@ Do not add facts that the candidate has not confirmed.
     "resume_format": "One-page PDF by default, following the candidate's chosen reference resume layout: compact header, horizontal rules, Experience before Projects, aligned left edges, no decorative color, and consistent indentation.",
     "resume_density_rule": "Use substantive Experience entries and Project Experience sections: aim for at least four visual text lines for a main experience entry, at least four bullets per selected project, and bullets that usually wrap to about two visual lines while keeping the PDF on one page.",
     "resume_reuse_rule": "Reuse the closest role archetype resume when the JD is materially similar; rewrite only when the JD changes the evidence priority.",
-    "application_tracker": "After every confirmed submission, update the candidate's chosen tracker instead of creating redundant spreadsheets.",
+    "application_tracker": "After every confirmed submission, update the candidate's chosen tracker instead of creating redundant spreadsheets. For China-facing users or products, prefer Feishu Bitable as the operational tracker/database.",
+    "tracker_options": {
+      "personal_default": "Candidate's configured tracker",
+      "china_user_default": "Feishu Bitable with one record per application",
+      "productized_backend": "PostgreSQL or MySQL as source of truth, optionally synced to Feishu Bitable for review"
+    },
     "experience_preference": "Use the candidate's current most relevant experience as the primary experience in tailored resumes."
   },
   "education": {

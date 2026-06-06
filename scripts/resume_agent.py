@@ -166,6 +166,10 @@ def build_packet(jd_text, role_hint, profile, archetypes):
                 "track": role_track,
                 "label": archetype["label"],
             },
+            "tracking": {
+                "application_tracker": profile.get("application_defaults", {}).get("application_tracker", ""),
+                "tracker_options": profile.get("application_defaults", {}).get("tracker_options", {}),
+            },
             "submission": {
                 "approved_to_submit": False,
                 "approval_required_from": candidate["name"],

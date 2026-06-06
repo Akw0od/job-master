@@ -24,7 +24,7 @@ This skill turns a target JD into an application packet: tailored resume focus, 
 5. Browser automation may fill fields after review, then stop at the final review screen.
 6. Final submission requires explicit approval for that exact company, role, and application.
 7. Default resume output is a clean one-page PDF with no decorative color, Experience before Projects, compact horizontal section rules, aligned left edges, and role-specific evidence reuse.
-8. After a confirmed submission, update the candidate's chosen tracker; do not create spreadsheet trackers unless explicitly requested.
+8. After a confirmed submission, update the configured tracker. For China-facing users or products, prefer Feishu Bitable as the operational tracker/database. Do not create spreadsheet trackers unless explicitly requested.
 
 ## Quickstart
 
@@ -96,6 +96,14 @@ Use browser automation only after the candidate has reviewed the packet. Fill fi
 ### 6. Track Submissions
 
 When the candidate confirms an application was submitted, add or update a concise tracker entry with company, role, job URL, submitted date, status, archetype, resume used, fit score, follow-up date, and confirmation evidence. Keep this as the candidate's chosen tracking surface.
+
+Tracker priority:
+
+- Personal workflow: use the candidate's configured tracker, such as Notion, a local file, or another preferred workspace.
+- China-facing users or China product mode: use Feishu Bitable as the default operational database/tracker because it is more familiar and accessible for Chinese users than Notion.
+- Productized SaaS mode: store the source of truth in PostgreSQL or MySQL, then sync a clean review dashboard to Feishu Bitable if users need a spreadsheet-like workspace.
+
+For Feishu Bitable, use one record per application and keep fields stable: company, role, job URL, status, source, submitted date, resume archetype, resume file/link, fit score, sponsorship risk, follow-up date, confirmation evidence, and notes. Treat Feishu as the review and operations surface; do not store secrets, private tokens, or sensitive identity documents in tracker rows.
 
 ## Current Evidence Base
 

@@ -15,6 +15,7 @@ The repository version is public-safe: `data/profile_context.md` contains exampl
 - Enforces a final human approval gate before submission.
 - Encourages one-page resume reuse by archetype when JDs are materially similar.
 - Preserves the candidate's reference resume layout: horizontal rules, aligned sections, no decorative color, Experience before Projects, and denser experience/project bullets that still fit on one page.
+- Supports tracker selection, including Feishu Bitable as the preferred operational tracker/database for China-facing users.
 
 ## Repository Layout
 
@@ -48,6 +49,7 @@ Edit `data/profile_context.md`. Keep the fenced JSON block, and replace the exam
 - candidate contact links
 - education
 - application defaults
+- tracker preferences, including Feishu Bitable for China-facing users when relevant
 - experience and project evidence
 - tags and bullets used for matching
 
