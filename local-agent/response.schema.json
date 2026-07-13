@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["reply", "suggestedResume", "changeSummary", "requiresConfirmation"],
+  "properties": {
+    "reply": {
+      "type": "string"
+    },
+    "suggestedResume": {
+      "type": "string"
+    },
+    "changeSummary": {
+      "type": "array",
+      "items": { "type": "string" },
+      "maxItems": 8
+    },
+    "requiresConfirmation": {
+      "type": "array",
+      "items": { "type": "string" },
+      "maxItems": 8
+    }
+  }
+}

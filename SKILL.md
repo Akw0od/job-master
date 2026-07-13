@@ -41,6 +41,17 @@ Outputs:
 - `autofill_data.json`: structured fields for browser form filling.
 - `packet_data.json`: full machine-readable packet.
 
+## Optional Local Workspace
+
+This repository also includes a local React workspace for users who prefer to review resume lineage, job matches, tailored variants, and application status visually. The workspace is optional; the deterministic Python packet generator remains usable on its own.
+
+```bash
+npm install
+npm run dev
+```
+
+The combined development command starts the Vite interface and a localhost-only Codex CLI rewrite service. Treat the uploaded resume as an immutable Master Resume, keep AI and manual edits in derived versions, and expose every change for human review. Browser-local drafts are not a cloud database, and bundled job pools are not a live job aggregation service.
+
 ## Workflow
 
 ### 1. Ingest The JD

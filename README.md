@@ -1,118 +1,98 @@
-# Resume Application Agent Skill
-#### 一个帮 Agent 按 JD 改简历、生成投递材料、辅助填表，但不擅自提交的求职 Skill
+# Job Master
+
+#### 一个以 Resume Application Agent Skill 为核心的本地求职工作台
 
 中文 · [English](./README.en.md)
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Skill](https://img.shields.io/badge/Agent%20Skill-SKILL.md-black)
-![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB)
+![Web](https://img.shields.io/badge/Web-React%20%2B%20Vite-149ECA)
 ![Human Gate](https://img.shields.io/badge/Submit-Human%20Approval%20Required-red)
 
-这个 skill 的目标很简单：给它一个岗位 JD，它会从候选人的结构化经历库里挑最相关的证据，生成一份投递 packet，并准备好可以拿去填表的结构化数据。
+Job Master 把一个可安装的求职 Skill 和一个本地可视化工作台放在同一仓库里。
 
-它不是“自动海投机器”。它更像一个求职副驾驶：帮你省掉重复改简历、整理 bullet、写申请回答、复制粘贴表单这些机械活，但最后提交必须由本人确认。
+- **Skill**：读取岗位 JD，从候选人确认过的事实库中选择证据，生成定制简历重点、申请回答和结构化填表数据。
+- **网站**：管理 Master Resume、方向简历、岗位版简历、岗位发现和申请进度，并逐条审核 AI 或手动修改。
 
----
+它不是自动海投工具。浏览器辅助可以准备材料和填写字段，但最终提交、工作授权、签证赞助和 EEOC 等敏感信息必须由候选人本人确认。
 
-## 目录
+## 当前能力
 
-| 名字 | 一句话 | 适合 |
-| --- | --- | --- |
-| `resume-application-agent` | 按 JD 自动选经历、改重点、生成申请包 | New Grad / SDE / AI Engineer / Risk Engineer / FDE |
+### 本地网站
 
----
+- 上传可搜索的 PDF、DOCX 或 TXT，并立即建立只读 Master Resume。
+- 派生可复用方向简历和一次性岗位版简历，始终保留来源链路。
+- 在简历正文中标红原句，在右侧完整展示绿色改写，并用编号联动定位。
+- 手动新增、删除或改写派生简历内容；Master Resume 保持不可变。
+- 按美国 / 中国与全职 / 实习独立筛选岗位；没有可验证岗位时显示真实空态。
+- 根据 Master Resume 和自定义求职方向重新计算岗位匹配度。
+- 追踪收藏、准备中、已投递、面试、Offer、未通过和归档等候选人视角状态。
+- 打开具体岗位申请链接，并保留最终人工确认门。
 
-## 安装方式
+网站目前是 **local-first 原型**：简历正文和操作状态以浏览器本地草稿为主，不声称使用 SQLite 或云端数据库；仓库内岗位池是演示和验证用途，不等同于实时招聘聚合服务。
 
-在支持 `SKILL.md` 的 Agent 里，可以直接说：
+### Resume Application Agent Skill
+
+- 将 JD 分类为 `sde`、`risk_engineer`、`fde` 或 `ai_agent_engineer` 等岗位 archetype。
+- 从 `data/profile_context.md` 中选择与 JD 最相关的已确认经历。
+- 生成 `application_packet.md`、`autofill_data.json` 和 `packet_data.json`。
+- 遇到履历缺口时明确标记，不编造公司、日期、学历、技能或指标。
+- 浏览器填表最多停在 final review screen，未经当前岗位的明确批准不得提交。
+
+## 运行网站
+
+要求：Node.js 20+。若需要本地 AI 改写，还需要已安装并登录的 Codex CLI。
+
+```bash
+git clone https://github.com/Akw0od/job-master.git
+cd job-master
+npm install
+npm run dev
+```
+
+`npm run dev` 会同时启动：
+
+- Vite 网站：终端显示的 `http://127.0.0.1:517x/`
+- 本地 Agent：`http://127.0.0.1:4317`
+
+只运行前端：
+
+```bash
+npm run dev:web
+```
+
+生产构建检查：
+
+```bash
+npm run build
+```
+
+## 安装 Skill
+
+在支持 `SKILL.md` 的 Agent 中，可以直接提供仓库地址：
 
 ```text
-帮我安装这个 skill：https://github.com/Akw0od/resume-application-agent-skill
+请安装并使用这个求职 Skill：https://github.com/Akw0od/job-master
 ```
 
-也可以手动复制到 Codex skills 目录：
+也可以手动安装到 Codex：
 
-```powershell
-git clone https://github.com/Akw0od/resume-application-agent-skill.git
-Copy-Item -Recurse .\resume-application-agent-skill "$env:USERPROFILE\.codex\skills\resume-application-agent"
+```bash
+git clone https://github.com/Akw0od/job-master.git
+cp -R job-master ~/.codex/skills/resume-application-agent
 ```
 
-复制后重启 Codex，让 skill registry 重新加载。
+重启 Codex 后即可让 Agent 读取 [SKILL.md](./SKILL.md)。
 
----
+## 使用 Skill 生成申请包
 
-## ✨ Skill
+公开仓库中的 `data/profile_context.md` 只包含示例资料。实际使用前，请先替换为本人确认过的简历事实。
 
-### resume-application-agent（简历投递代理）
-
-> “简历不是每个岗位重写一遍，而是按岗位类型复用、按 JD 重点微调。”
-
-随口跟 Agent 说：
-
-```text
-帮我投这个岗位，先根据 JD 改一版简历
-这个是 AI Engineer，帮我从经历里挑最相关的项目
-把这个 Greenhouse / Ashby 表单填到提交前
-```
-
-它会做几件事：
-
-* 读取 JD，判断岗位更像 `SDE`、`Risk Engineer`、`FDE` 还是 `AI / LLM Agent Engineer`
-* 从 `data/profile_context.md` 里挑最相关的经历和项目
-* 生成 `application_packet.md`：岗位重点、命中的证据、可复用 bullet、申请回答草稿
-* 生成 `autofill_data.json`：姓名、链接、岗位 track、提交安全门等结构化字段
-* 帮你保持一页简历思路：相似 JD 复用同一 archetype，只有重点变化很大时才重写
-* 按候选人自己的参考简历排版：横线、对齐、无装饰色、Experience before Projects，并在一页内让 experience / project bullet 更饱满
-* 遇到 final submit、work authorization、sponsorship、EEOC 等字段时停下来让本人确认
-
-它适合：
-
-* New Grad / Entry Level 投递
-* SDE / Full-stack / AI Engineer / Risk Engineer / FDE 这类岗位
-* 需要根据 JD 组合不同项目经历的简历
-* Greenhouse、Ashby、Lever 这类表单填到最终检查前
-* 想把投递记录写进 Notion、飞书多维表格或本地 tracker，而不是每次重写一堆 PDF
-
-面向中国用户时，默认推荐用飞书多维表格作为投递 tracker / 轻量数据库；如果产品化成 SaaS，再用 PostgreSQL / MySQL 做真实后端数据库，并把飞书作为人工审核和运营界面。
-
-它不适合：
-
-* 编造经历、学历、公司、日期、指标
-* 绕过本人确认自动提交
-* 替你回答法律/身份敏感问题
-* 无差别海投
-
----
-
-## 先改你的事实库
-
-公开仓库里的 `data/profile_context.md` 是示例数据，不是真人资料。
-
-真正使用前，先把里面的 JSON 换成你自己的事实：
-
-* 候选人信息：姓名、地点、邮箱、LinkedIn、GitHub
-* 教育经历：学校、专业、毕业时间、课程
-* 项目/实习 evidence：每个项目的 tags、summary、bullets
-* 默认偏好：一页简历、复用规则、tracker 位置、是否使用飞书多维表格
-
-铁律：
-
-* 没确认的事实不要写进去
-* 不要编指标
-* 不要编公司/岗位/日期
-* work authorization、sponsorship、EEOC 一律让本人确认
-
----
-
-## 怎么跑
-
-生成一个申请包：
-
-```powershell
-python .\scripts\resume_agent.py `
-  --jd .\examples\amazon_sde_jd.txt `
-  --role "Amazon SDE" `
-  --out .\runs\amazon-sde
+```bash
+python scripts/resume_agent.py \
+  --jd examples/amazon_sde_jd.txt \
+  --role "Amazon SDE" \
+  --out runs/amazon-sde
 ```
 
 输出：
@@ -124,61 +104,44 @@ runs/amazon-sde/
 `-- packet_data.json
 ```
 
----
-
 ## 仓库结构
 
 ```text
 .
-|-- SKILL.md                         # Agent 读取的 skill 入口
-|-- data/
-|   |-- job_archetypes.json          # 岗位类型、关键词、优先证据
-|   `-- profile_context.md           # 候选人事实库，公开版为示例
-|-- examples/                        # 示例 JD
+|-- SKILL.md                    # Agent Skill 入口与安全规则
+|-- data/                       # 岗位 archetype 与公开示例事实库
+|-- examples/                   # 示例 JD
 |-- scripts/
-|   `-- resume_agent.py              # 确定性 packet 生成脚本
-|-- templates/
-|-- tests/
-`-- README.en.md
+|   |-- resume_agent.py         # 确定性申请包生成器
+|   `-- dev.mjs                 # 网站与本地 Agent 联合启动器
+|-- local-agent/                # Codex CLI 本地改写服务
+|-- src/                        # React 求职工作台
+|-- templates/                  # 申请包模板
+|-- tests/                      # Python Skill 测试
+`-- AGENTS.md                   # 原型的产品与实现约束
 ```
 
----
+## 安全与隐私
 
-## 安全边界
-
-这个 skill 的核心不是“自动投”，而是“人类确认后再投”。
-
-两条硬规则：
-
-* **不能自动提交。** 浏览器自动化最多填到 final review screen，看到 submit 就停。
-* **敏感字段不能猜。** 工作授权、签证赞助、残障、退伍军人、种族、性别等字段必须让候选人明确回答。
-
----
+1. **事实由用户拥有。** 未确认内容不能伪装成简历事实。
+2. **Master Resume 不可变。** AI 和手动修改都必须生成派生版本并提供差异审核。
+3. **不得自动提交。** 每个具体岗位都需要候选人确认最终申请。
+4. **敏感字段不得猜测。** 工作授权、签证、残障、退伍军人、种族和性别等问题必须由本人回答。
+5. **本地不等于零风险。** 使用真实简历前应检查设备权限、浏览器存储和所调用模型的隐私政策。
 
 ## 测试
 
-```powershell
-python -m unittest discover -s .\tests -v
+```bash
+python -m unittest discover -s tests -v
+npm run build
 ```
 
-测试会覆盖：
+Python 测试覆盖岗位分类、证据选择、文件输出和人工提交门；前端构建用于验证本地工作台可发布。
 
-* JD role classification
-* evidence selection
-* CLI 输出文件
-* human approval gate
-* AI New Grad / evals 类岗位不会被误分到 FDE
+## 状态
 
----
-
-## 跨平台
-
-Claude Code · Codex · OpenCode · OpenClaw
-
-只要 Agent 支持读取 `SKILL.md`，就可以把这个仓库作为 skill 使用。
-
----
+这是一个持续迭代的 Skill + 产品原型，当前更适合本地试用、工作流验证和贡献开发。云端账户、支付、托管数据库、实时岗位连接器和生产级隐私控制仍属于后续 SaaS 工作。
 
 ## License
 
-MIT
+[MIT](./LICENSE)

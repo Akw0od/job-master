@@ -1,67 +1,67 @@
-# Resume Application Agent Skill
+# Job Master
 
-English · [中文](./README.md)
+#### A local job-search workspace powered by a Resume Application Agent Skill
 
-A Codex skill for tailoring a candidate resume to a job description, generating an application packet, and preparing structured autofill data while keeping a human approval gate before submission.
+[中文](./README.md) · English
 
-The repository version is public-safe: `data/profile_context.md` contains example candidate data. Replace it with your own verified resume facts before using the skill for real applications.
+![License](https://img.shields.io/badge/license-MIT-blue)
+![Skill](https://img.shields.io/badge/Agent%20Skill-SKILL.md-black)
+![Web](https://img.shields.io/badge/Web-React%20%2B%20Vite-149ECA)
+![Human Gate](https://img.shields.io/badge/Submit-Human%20Approval%20Required-red)
 
-## What It Does
+Job Master combines an installable agent skill with a local visual workspace.
 
-- Classifies a JD into role archetypes such as SDE, Risk Engineer, Forward Deployed Engineer, or AI / LLM Agent Engineer.
-- Selects the strongest evidence from a structured candidate profile.
-- Generates an application packet with tailored summary, selected evidence, bullet direction, and short application answers.
-- Writes `autofill_data.json` for browser-assisted form filling.
-- Enforces a final human approval gate before submission.
-- Encourages one-page resume reuse by archetype when JDs are materially similar.
-- Preserves the candidate's reference resume layout: horizontal rules, aligned sections, no decorative color, Experience before Projects, and denser experience/project bullets that still fit on one page.
-- Supports tracker selection, including Feishu Bitable as the preferred operational tracker/database for China-facing users.
+- **Skill:** reads a job description, selects evidence from a candidate-controlled fact base, and creates tailored application materials and structured autofill data.
+- **Web workspace:** manages an immutable Master Resume, reusable direction resumes, disposable job-specific variants, job discovery, and application tracking.
 
-## Repository Layout
+It is not an auto-apply bot. Browser assistance may prepare materials and fill fields, but final submission and sensitive questions always require the candidate's explicit review.
 
-```text
-.
-|-- SKILL.md
-|-- data/
-|   |-- job_archetypes.json
-|   `-- profile_context.md
-|-- examples/
-|-- scripts/
-|   `-- resume_agent.py
-|-- templates/
-`-- tests/
+## Web Workspace
+
+- Import searchable PDF, DOCX, or TXT resumes as an immutable Master Resume.
+- Derive direction and job-specific resumes while retaining visible lineage.
+- Mark changed source text in red and show complete green rewrites in a linked review panel.
+- Manually add, delete, and rewrite content in derived resumes.
+- Filter job discovery independently by US / China and Full-time / Internship.
+- Re-score jobs from the current Master Resume and built-in or custom directions.
+- Track candidate-facing states from Saved through Applied, Interview, Offer, Rejected, and Archived.
+- Open the specific job application URL and retain a final human approval gate.
+
+The website is currently a **local-first prototype**. Browser-local drafts are not a hosted database, and the bundled job pools are for product validation rather than a real-time job aggregation service.
+
+## Run The Website
+
+Requirements: Node.js 20+. Local AI rewriting also requires an installed and authenticated Codex CLI.
+
+```bash
+git clone https://github.com/Akw0od/job-master.git
+cd job-master
+npm install
+npm run dev
 ```
 
-## Install As A Codex Skill
+`npm run dev` starts both the Vite site and the local Codex agent on `127.0.0.1:4317`. Use `npm run dev:web` for the frontend only and `npm run build` for a production build check.
 
-Copy this folder into your Codex skills directory:
+## Install The Skill
 
-```powershell
-Copy-Item -Recurse . "$env:USERPROFILE\.codex\skills\resume-application-agent"
+Point a `SKILL.md`-compatible agent at this repository, or install it manually for Codex:
+
+```bash
+git clone https://github.com/Akw0od/job-master.git
+cp -R job-master ~/.codex/skills/resume-application-agent
 ```
 
-Then restart Codex so the skill registry reloads.
-
-## Configure Your Profile
-
-Edit `data/profile_context.md`. Keep the fenced JSON block, and replace the example values with verified facts:
-
-- candidate contact links
-- education
-- application defaults
-- tracker preferences, including Feishu Bitable for China-facing users when relevant
-- experience and project evidence
-- tags and bullets used for matching
-
-Do not add unverified employers, dates, metrics, degrees, work authorization, or compensation details.
+Restart Codex so the skill registry can load [SKILL.md](./SKILL.md).
 
 ## Generate An Application Packet
 
-```powershell
-python .\scripts\resume_agent.py `
-  --jd .\examples\amazon_sde_jd.txt `
-  --role "Amazon SDE" `
-  --out .\runs\amazon-sde
+The checked-in `data/profile_context.md` contains public-safe example data. Replace it with your own verified facts before real use.
+
+```bash
+python scripts/resume_agent.py \
+  --jd examples/amazon_sde_jd.txt \
+  --role "Amazon SDE" \
+  --out runs/amazon-sde
 ```
 
 Outputs:
@@ -70,20 +70,39 @@ Outputs:
 - `autofill_data.json`
 - `packet_data.json`
 
-## Run Tests
+## Safety Boundaries
 
-```powershell
-python -m unittest discover -s .\tests -v
+1. Candidate facts remain user-owned and unverified claims must stay visibly unconfirmed.
+2. The Master Resume is immutable; AI and manual edits create reviewable derived versions.
+3. No final application submission without explicit approval for that exact company and role.
+4. Work authorization, sponsorship, EEOC, compensation, and other sensitive fields must never be guessed.
+5. Local-first does not mean risk-free; review device permissions, browser storage, and model-provider privacy terms before using real personal data.
+
+## Repository Layout
+
+```text
+.
+|-- SKILL.md
+|-- data/
+|-- examples/
+|-- scripts/resume_agent.py
+|-- scripts/dev.mjs
+|-- local-agent/
+|-- src/
+|-- templates/
+|-- tests/
+`-- AGENTS.md
 ```
 
-The test suite checks role classification, evidence selection, output writing, and the no-auto-submit approval gate.
+## Tests
 
-## Safety Model
+```bash
+python -m unittest discover -s tests -v
+npm run build
+```
 
-This skill can prepare material and assist with form filling, but it should not submit applications automatically. Stop at the final review screen and require explicit approval for the exact company, role, and application.
-
-For legally sensitive fields such as work authorization, sponsorship, disability, veteran status, or demographic self-identification, ask the candidate directly.
+This repository is an evolving skill and product prototype. Hosted accounts, billing, persistent cloud storage, live job connectors, and production privacy controls remain future SaaS work.
 
 ## License
 
-MIT
+[MIT](./LICENSE)
