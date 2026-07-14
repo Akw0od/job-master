@@ -9,8 +9,15 @@ Thumbs.db
 *.png
 *.jpg
 *.jpeg
+!docs/dashboard.png
 *.log
 .env
 .env.*
 node_modules/
-package-lock.json
+dist/
+.npm-cache/
+tmp/
+design-qa-captures/
+design-audit/
+design-qa.md
+CLOUD_MVP.md
