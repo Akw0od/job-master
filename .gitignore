@@ -9,6 +9,7 @@ Thumbs.db
 *.png
 *.jpg
 *.jpeg
+!docs/dashboard.png
 *.log
 .env
 .env.*
