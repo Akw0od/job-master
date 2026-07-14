@@ -50,7 +50,9 @@ npm install
 npm run dev
 ```
 
-The combined development command starts the Vite interface and a localhost-only Codex CLI rewrite service. Treat the uploaded resume as an immutable Master Resume, keep AI and manual edits in derived versions, and expose every change for human review. Browser-local drafts are not a cloud database, and bundled job pools are not a live job aggregation service.
+The combined command starts the Vite interface and a localhost-only Codex CLI rewrite service. Open the Vite URL printed in the terminal, normally `http://127.0.0.1:5173/`; Vite selects another port if that one is occupied. Use `npm run dev:web` when the user only needs the interface without local AI rewriting.
+
+Keep the full repository when installing the skill if the user wants this dashboard; copying only `SKILL.md` is not enough. Treat the uploaded resume as an immutable Master Resume, keep AI and manual edits in derived versions, and expose every change for human review. Browser-local drafts are not a cloud database, and bundled job pools are not a live job aggregation service.
 
 ## Workflow
 
