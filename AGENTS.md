@@ -19,6 +19,7 @@ When implementing from a selected generated mock, treat that image as the source
 - Job discovery must respect the selected market. Switching between China and the US should swap the discovery pool immediately; refreshes should rotate in visibly new roles while preserving jobs the user has explicitly tracked.
 - Use three primary product areas instead of a five-step wizard: Find Jobs, My Resume, and Applications.
 - Treat direction recommendations and AI resume polishing as contextual actions inside job discovery and job detail, not mandatory top-level steps.
+- Selecting a resume direction shortcut must only enter that direction or open its saved version. When no version exists, show the Master Resume as the starting point and wait for an explicit Manual Edit or Optimize action; never start AI optimization from the direction tab itself.
 - The primary loop is resume upload -> job discovery -> JD-based tailoring -> official-site application assist -> application tracking.
 - Application tracking should use candidate-facing statuses such as Saved, Preparing, Applied, Interview, Offer, Rejected, and Archived.
 - A locally uploaded resume must become the visible Master Resume immediately. Never substitute demo resume content after a successful upload; show a clear parsing error instead.
@@ -33,3 +34,9 @@ When implementing from a selected generated mock, treat that image as the source
 - Keep market and employment type as independent job-discovery filters. China and the US must each support Full-time and Internship pools, with an explicit empty state when a pool has no verified roles.
 - Show resume diffs in context: mark changed source text red inside the resume preview and place the full green rewrite in the right review panel, linked by a shared number and focus behavior. Do not truncate rewrite text.
 - Let users manually add, delete, and rewrite content in direction and job-derived resumes while keeping the Master Resume immutable. Manual edits must retain lineage and appear in the same in-context diff review.
+- Treat "Finish editing" as an explicit browser-local save for the active derived resume. Accepted AI rewrites must update the working resume immediately, persist across refreshes, and be saved into the derived version; saved versions show read-only lineage instead of asking users to accept the same changes again.
+- Require an explicit accept or reject decision for every AI-proposed resume change before saving a derived version. Keep a separate final preview and source-comparison mode so review markup never leaks into the exported resume.
+- Resume import must expose format, page/section diagnostics, and parsing warnings. Preserve readable PDF/DOCX header order, section order, paragraph grouping, and wrapped bullets; reject unreadable scans instead of fabricating structure.
+- Resume PDF export must use selectable text, support A4 and Letter, and preserve system CJK fonts. Do not regress to screenshot-only PDFs; the browser print/save dialog remains the final user-controlled file action.
+- Keep Stripe work outside the current core-fix scope. If the deferred billing prototype is restored later, use server-created Checkout Sessions and never claim Alipay or WeChat Pay support until Stripe Dashboard approval is confirmed for this Jobmaster account.
+- Support a browser-local Chinese/English interface switch. Locale changes product chrome only; never translate or mutate uploaded resume text, pasted JDs, custom directions, or other user-owned content.

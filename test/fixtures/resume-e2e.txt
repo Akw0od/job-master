@@ -1,0 +1,21 @@
+Jordan Lee
+Product Engineer
+jordan.lee@example.test
+San Francisco, CA
+
+SUMMARY
+Product engineer focused on reliable workflow automation and human review.
+
+EXPERIENCE
+Example Systems — Product Engineer
+2024 – Present
+- Built a browser-local review workflow with explicit save and approval states.
+- Added automated regression coverage for parsing, persistence, and export behavior.
+
+PROJECTS
+Application Review Workspace
+- Designed a document-first comparison flow for source and revised resume content.
+- Preserved user-owned facts while making proposed wording changes reviewable.
+
+SKILLS
+JavaScript, React, Node.js, testing, accessibility

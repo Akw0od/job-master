@@ -14,24 +14,31 @@ Job Master combines an installable agent skill with a local visual workspace.
 - **Skill:** reads a job description, selects evidence from a candidate-controlled fact base, and creates tailored application materials and structured autofill data.
 - **Web workspace:** manages an immutable Master Resume, reusable direction resumes, disposable job-specific variants, job discovery, and application tracking.
 
-It is not an auto-apply bot. Browser assistance may prepare materials and fill fields, but final submission and sensitive questions always require the candidate's explicit review.
+It is not an auto-apply bot. Browser assistance currently prepares authorized field data and opens a specific application page; it does not fill or submit the form. Final submission and sensitive questions always require the candidate's explicit review.
 
 ## Web Workspace
 
 - Import searchable PDF, DOCX, or TXT resumes as an immutable Master Resume.
+- Extract PDF text layers and DOCX semantic structure locally while retaining header order, section order, paragraph groups, and wrapped bullets; surface import diagnostics instead of silently substituting content.
 - Derive direction and job-specific resumes while retaining visible lineage.
-- Mark changed source text in red and show complete green rewrites in a linked review panel.
+- Switch between a final preview and source comparison; comparison mode marks source text in red and shows complete green rewrites in a linked review panel.
+- Require an explicit accept or reject decision for every AI rewrite before saving a derived version, then retain that version and lineage across refreshes.
+- Export selectable-text A4 or Letter PDFs through the browser print flow so system CJK fonts remain available; the user confirms the final save location.
 - Manually add, delete, and rewrite content in derived resumes.
 - Filter job discovery independently by US / China and Full-time / Internship.
-- Re-score jobs from the current Master Resume and built-in or custom directions.
+- Search current official role pages only when the user clicks Refresh, then validate the specific role URL before adding a result.
+- Keep candidate resume text and personal data out of web search; re-score returned roles locally from the Master Resume and built-in or custom directions.
+- Preserve the complete user-pasted JD as a job snapshot and include it in job-specific rewrite requests.
+- Use calibrated match confidence without an artificial minimum score.
+- Add a role to Applications only after the user saves it, starts tailoring, or opens the application page.
 - Track candidate-facing states from Saved through Applied, Interview, Offer, Rejected, and Archived.
-- Open the specific job application URL and retain a final human approval gate.
+- Open the specific job application URL, prepare authorized data, and retain a final human approval gate.
 
-The website is currently a **local-first prototype**. Browser-local drafts are not a hosted database, and the bundled job pools are for product validation rather than a real-time job aggregation service.
+The website is currently a **local-first prototype**. Browser-local drafts use a versioned storage schema but are not a hosted database. Bundled roles are marked as needing re-verification; only manually refreshed results that pass direct-link checks are shown as verified. This is not a continuously running job aggregation service.
 
 ## Run The Website
 
-Requirements: Node.js 20+. Local AI rewriting also requires an installed and authenticated Codex CLI.
+Requirements: Node.js 20+. Local AI rewriting and user-triggered official-site search require an installed and authenticated Codex CLI.
 
 ```bash
 git clone https://github.com/Akw0od/job-master.git
@@ -40,7 +47,7 @@ npm install
 npm run dev
 ```
 
-`npm run dev` starts both the Vite site and the local Codex agent on `127.0.0.1:4317`. Use `npm run dev:web` for the frontend only and `npm run build` for a production build check.
+`npm run dev` starts both the Vite site and the local Codex agent on `127.0.0.1:4317`. Use `npm run dev:web` for the frontend only and `npm run check` for the full lint, test, and build check. Run `npm run audit:prod` for the production dependency audit.
 
 ## Install The Skill
 
@@ -89,6 +96,7 @@ Outputs:
 |-- scripts/dev.mjs
 |-- local-agent/
 |-- src/
+|-- test/
 |-- templates/
 |-- tests/
 `-- AGENTS.md
@@ -97,11 +105,10 @@ Outputs:
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v
-npm run build
+npm run check
 ```
 
-This repository is an evolving skill and product prototype. Hosted accounts, billing, persistent cloud storage, live job connectors, and production privacy controls remain future SaaS work.
+This repository is an evolving skill and product prototype. Hosted accounts, persistent cloud storage, continuously running job connectors, and production privacy controls remain future SaaS work.
 
 ## License
 
