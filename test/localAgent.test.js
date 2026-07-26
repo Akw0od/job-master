@@ -12,6 +12,8 @@ import {
   buildJobSearchPrompt,
   isSpecificJobUrl,
   normalizeJobSearchPayload,
+  normalizeJobUrlVerificationPayload,
+  verifyJobUrls,
   verifyJobSearchResult,
 } from "../local-agent/jobSearch.mjs";
 
@@ -125,6 +127,22 @@ test("job search request accepts only supported filters and bounded keywords", (
   assert.throws(
     () => normalizeJobSearchPayload({ market: "美国", employmentType: "实习", targetRole: "Engineer", existingApplyUrls: "https://example.com/jobs/1" }),
     /已有岗位链接必须是数组/,
+  );
+});
+
+test("lightweight job URL verification accepts only small batches of concrete official URLs", () => {
+  assert.deepEqual(normalizeJobUrlVerificationPayload({
+    urls: ["https://example.com/jobs/123", "https://example.com/jobs/123"],
+  }), {
+    urls: ["https://example.com/jobs/123"],
+  });
+  assert.throws(
+    () => normalizeJobUrlVerificationPayload({ urls: ["https://example.com/careers"] }),
+    /具体职位/,
+  );
+  assert.throws(
+    () => normalizeJobUrlVerificationPayload({ urls: Array.from({ length: 9 }, (_, index) => `https://example.com/jobs/${index}`) }),
+    /最多 8 个/,
   );
 });
 
@@ -669,6 +687,40 @@ test("only deterministic closure states reject an application URL", async () => 
     });
     assert.deepEqual(result.rejectedApplyUrls, ["https://example.com/jobs/123"]);
   }
+});
+
+test("all deterministically closed tracked URLs are returned, beyond the discovery result limit", async () => {
+  const urls = Array.from({ length: 12 }, (_, index) => `https://example.com/jobs/closed-${index + 1}`);
+  const result = await verifyJobSearchResult({ jobs: [] }, {
+    ...internshipPayload,
+    existingApplyUrls: urls,
+  }, {
+    fetchImpl: async () => ({ ok: false, status: 410, headers: { get: () => null }, body: { cancel: async () => {} } }),
+  });
+
+  assert.deepEqual(result.rejectedApplyUrls, urls);
+});
+
+test("lightweight URL verification returns open, closed, and unknown without treating uncertainty as closure", async () => {
+  const urls = [
+    "https://example.com/jobs/open-123",
+    "https://example.com/jobs/closed-123",
+    "https://example.com/jobs/unknown-123",
+  ];
+  const result = await verifyJobUrls(urls, {
+    fetchImpl: async (url) => {
+      if (url.includes("closed")) return { ok: false, status: 404, headers: { get: () => null }, body: { cancel: async () => {} } };
+      if (url.includes("unknown")) throw new Error("offline");
+      return { ok: true, status: 200, headers: { get: () => null }, body: { cancel: async () => {} } };
+    },
+  });
+
+  assert.deepEqual(result.checks.map(({ url, state }) => ({ url, state })), [
+    { url: urls[0], state: "open" },
+    { url: urls[1], state: "closed" },
+    { url: urls[2], state: "unknown" },
+  ]);
+  assert.equal(result.checks.every(({ checkedAt }) => Number.isFinite(Date.parse(checkedAt))), true);
 });
 
 test("a skipped employment-type mismatch cannot invalidate another role", async () => {

@@ -42,11 +42,13 @@ import {
 } from "./domain/applications";
 import {
   analyzeJobForResume,
+  applyLiveUrlVerificationResults,
   filterDiscoverableJobs,
   getDiscoveryKey,
   getJobDiscoveryBatch,
   getLiveOfficialApplyUrls,
   inferJobTrack,
+  isLiveOfficialVerificationStale,
   markRejectedLiveJobs,
   mergeJobPools,
   normalizeSearchedJobs,
@@ -54,7 +56,16 @@ import {
 } from "./domain/jobDiscovery";
 import { translateUiText } from "./i18n";
 import { extractResumeDocument } from "./resume/resumeIO";
-import { requestResumeRewrite as requestResumeRewriteFromAgent, searchOfficialJobs } from "./services/localAgent";
+import {
+  requestResumeRewrite as requestResumeRewriteFromAgent,
+  searchOfficialJobs,
+  verifyOfficialJobUrls,
+} from "./services/localAgent";
+import {
+  closeReservedApplicationWindow,
+  navigateReservedApplicationWindow,
+  reserveApplicationWindow,
+} from "./services/applicationWindow";
 import { readDashboard, writeDashboard } from "./storage/dashboardStorage";
 import {
   applyResumeChange,
@@ -70,9 +81,10 @@ import {
 
 const tabs = ["岗位匹配", "定制简历", "追踪"];
 
-function verificationStatusCopy(status) {
-  if (status === "verified") return "链接已核验";
-  if (status === "unavailable") return "官网确认岗位已失效";
+function verificationStatusCopy(job) {
+  if (job?.verificationStatus === "unavailable") return "官网确认岗位已失效";
+  if (job?.verificationStatus === "verified" && isLiveOfficialVerificationStale(job)) return "核验已过期";
+  if (job?.verificationStatus === "verified") return "链接已核验";
   return "待重新核验";
 }
 
@@ -224,6 +236,7 @@ export function App() {
   const [isPrintRequested, setIsPrintRequested] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [isRefreshingJobs, setIsRefreshingJobs] = useState(false);
+  const [verifyingJobIds, setVerifyingJobIds] = useState([]);
   const [discoveryCycles, setDiscoveryCycles] = useState(() => {
     const saved = savedDashboard.discoveryCycles ?? {};
     return {
@@ -1346,21 +1359,81 @@ export function App() {
     );
   }
 
-  function openJobSource(job) {
+  function applyLiveUrlChecks(checks) {
+    setApplications((current) => applyLiveUrlVerificationResults(current, checks));
+    setLiveJobsByDiscoveryKey((current) => Object.fromEntries(
+      Object.entries(current).map(([key, jobs]) => [
+        key,
+        applyLiveUrlVerificationResults(Array.isArray(jobs) ? jobs : [], checks),
+      ]),
+    ));
+  }
+
+  function isJobUrlVerifying(job) {
+    return Boolean(job?.id && verifyingJobIds.includes(job.id));
+  }
+
+  async function openJobSource(job) {
     if (job?.verificationStatus === "unavailable") {
       setToast("官网已确认该岗位失效，已保留你的求职记录。");
-      return;
+      return false;
     }
     const applicationUrl = job?.applyUrl || (job?.source === "手动 JD" ? job.url : "");
     if (!applicationUrl || !isSpecificApplicationUrl(applicationUrl)) {
       setToast("这个岗位缺少具体申请链接，不会跳转到公司招聘首页。请重新导入并补充职位链接。");
-      return;
+      return false;
+    }
+    const requiresFreshVerification = isLiveOfficialVerificationStale(job);
+    let reservedApplicationWindow = null;
+    if (requiresFreshVerification) {
+      if (isJobUrlVerifying(job)) return false;
+      reservedApplicationWindow = reserveApplicationWindow(window.open.bind(window));
+      if (!reservedApplicationWindow) {
+        setToast(t("浏览器拦截了申请页预留窗口。请允许弹窗后重新打开此岗位。"));
+        return false;
+      }
+      setVerifyingJobIds((current) => [...current, job.id]);
+      setApplications((current) => current.map((item) => (
+        item.id === job.id ? { ...item, userTracked: true, updated: "正在重新核验官网链接" } : item
+      )));
+      setToast(t("正在重新核验官网职位链接…"));
+      let check = { url: applicationUrl, state: "unknown", checkedAt: new Date().toISOString() };
+      try {
+        const result = await verifyOfficialJobUrls([applicationUrl]);
+        const responseCheck = Array.isArray(result?.checks)
+          ? result.checks.find((item) => item?.url === applicationUrl)
+          : null;
+        if (responseCheck && ["open", "closed", "unknown"].includes(responseCheck.state)) check = responseCheck;
+      } catch {
+        // A local network or Agent failure is an unknown state, never closure.
+      } finally {
+        setVerifyingJobIds((current) => current.filter((id) => id !== job.id));
+      }
+      applyLiveUrlChecks([check]);
+      if (check.state === "closed") {
+        closeReservedApplicationWindow(reservedApplicationWindow);
+        setToast("官网已确认该岗位失效，已保留你的求职记录。");
+        return false;
+      }
+      if (check.state !== "open") {
+        closeReservedApplicationWindow(reservedApplicationWindow);
+        setToast(t("官网链接暂时无法确认，未自动打开。请稍后重试。"));
+        return false;
+      }
+    }
+    if (requiresFreshVerification) {
+      if (!navigateReservedApplicationWindow(reservedApplicationWindow, applicationUrl)) {
+        setToast(t("申请页预留窗口已关闭，未自动打开。请重新打开此岗位。"));
+        return false;
+      }
+    } else {
+      window.open(applicationUrl, "_blank", "noopener,noreferrer");
     }
     setApplications((current) => current.map((item) => (
       item.id === job.id ? { ...item, userTracked: true, updated: "刚刚打开申请页" } : item
     )));
-    window.open(applicationUrl, "_blank", "noopener,noreferrer");
     setToast(`已打开 ${job.company} 的具体职位申请页。`);
+    return true;
   }
 
   function updateCandidateProfile(field, value) {
@@ -1382,7 +1455,7 @@ export function App() {
     setIsApplicationAssistOpen(true);
   }
 
-  function launchApplicationAssist() {
+  async function launchApplicationAssist() {
     if (!selected) return;
     if (selected.verificationStatus === "unavailable") {
       setToast("官网已确认该岗位失效，已保留你的求职记录。");
@@ -1408,8 +1481,9 @@ export function App() {
       },
     }));
     setIsApplicationAssistOpen(false);
-    openJobSource(selected);
-    setToast("已打开职位申请页。后续只可使用你授权的字段；身份、授权、声明和最终提交必须由本人确认。");
+    if (await openJobSource(selected)) {
+      setToast("已打开职位申请页。后续只可使用你授权的字段；身份、授权、声明和最终提交必须由本人确认。");
+    }
   }
 
   function watchJob(job) {
@@ -1706,7 +1780,7 @@ export function App() {
               </span>
             </div>
               <div className="review-title-actions">
-                <button className="button quiet" onClick={() => openJobSource(selected)}>
+                <button className="button quiet" disabled={isJobUrlVerifying(selected)} onClick={() => openJobSource(selected)}>
                   <ArrowSquareOut size={17} />
                   {t("打开申请页")}
                 </button>
@@ -1780,7 +1854,7 @@ export function App() {
                 <div>
                   <dt>{t("链接状态")}</dt>
                   <dd>
-                    {t(verificationStatusCopy(selected.verificationStatus))}
+                    {t(verificationStatusCopy(selected))}
                     {selected.verifiedAt
                       ? ` · ${new Date(selected.verifiedAt).toLocaleDateString(uiLanguage === "en" ? "en-US" : "zh-CN")}`
                       : ""}
@@ -2413,13 +2487,13 @@ export function App() {
                                 {job.matchSignals?.length > 0 && (
                                   <span className="match-signal-row">{t("匹配：")}{job.matchSignals.join(" · ")}</span>
                                 )}
-                                <small>{job.source} · {t(verificationStatusCopy(job.verificationStatus))}</small>
+                                <small>{job.source} · {t(verificationStatusCopy(job))}</small>
                               </span>
                               <CaretRight size={18} />
                             </button>
                             <div className="job-card-actions">
                               <button onClick={() => watchJob(job)}><CalendarBlank size={15} />{t("收藏")}</button>
-                              <button onClick={() => openJobSource(job)}><ArrowSquareOut size={15} />{t("申请")}</button>
+                              <button disabled={isJobUrlVerifying(job)} onClick={() => openJobSource(job)}><ArrowSquareOut size={15} />{t("申请")}</button>
                             </div>
                           </article>
                         ))}
@@ -2504,7 +2578,7 @@ export function App() {
                             <CaretDown size={14} />
                           </label>
                           <span role="cell">{t(job.updated)}</span>
-                          <div role="cell" className="application-row-actions"><button aria-label={uiLanguage === "en" ? `Open ${job.company} application` : `打开 ${job.company} 申请页`} onClick={() => openJobSource(job)}><ArrowSquareOut size={16} /></button><button aria-label={uiLanguage === "en" ? `View ${job.company} role details` : `查看 ${job.company} 岗位详情`} onClick={() => selectJob(job)}><CaretRight size={16} /></button></div>
+                          <div role="cell" className="application-row-actions"><button disabled={isJobUrlVerifying(job)} aria-label={uiLanguage === "en" ? `Open ${job.company} application` : `打开 ${job.company} 申请页`} onClick={() => openJobSource(job)}><ArrowSquareOut size={16} /></button><button aria-label={uiLanguage === "en" ? `View ${job.company} role details` : `查看 ${job.company} 岗位详情`} onClick={() => selectJob(job)}><CaretRight size={16} /></button></div>
                         </div>
                       ))}
                     </div>
@@ -2588,7 +2662,7 @@ export function App() {
           </div>
           <div className="rail-group">
             <span>{t("职位申请")}</span>
-            <button className="link-row" onClick={() => openJobSource(selected)}>
+            <button className="link-row" disabled={isJobUrlVerifying(selected)} onClick={() => openJobSource(selected)}>
               <span>
                 {t("打开申请页")}
                 <small>{selected.company} - {selected.role}</small>

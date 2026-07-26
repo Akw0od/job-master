@@ -17,6 +17,7 @@ const targetRoleTracks = {
 
 const accentOptions = ["ink", "blue", "violet", "slate", "mono"];
 const terminalDiscoveryStatuses = new Set(["已投递", "面试", "Offer", "未通过"]);
+const liveVerificationMaxAgeMs = 24 * 60 * 60 * 1000;
 
 export function getDiscoveryKey(market, employmentType) {
   return `${market}:${employmentType}`;
@@ -24,7 +25,11 @@ export function getDiscoveryKey(market, employmentType) {
 
 export function getJobDiscoveryBatch(jobPoolsByMarket, market, employmentType, cycle, batchSize = 6, seenIds = []) {
   const marketPool = jobPoolsByMarket[market] ?? Object.values(jobPoolsByMarket)[0] ?? [];
-  const pool = marketPool.filter((job) => job.stage === "进行中" && (job.employmentType ?? "全职") === employmentType);
+  const pool = marketPool.filter((job) => (
+    job.stage === "进行中"
+    && (job.employmentType ?? "全职") === employmentType
+    && job.verificationStatus !== "unavailable"
+  ));
   if (pool.length <= batchSize) return pool;
 
   const seen = new Set(seenIds);
@@ -172,23 +177,58 @@ function isLiveOfficialJob(job) {
   return String(job?.id ?? "").startsWith("live-") && job?.jdSource === "official-summary";
 }
 
-export function markRejectedLiveJobs(jobs, rejectedApplyUrls) {
-  const rejectedUrls = new Set((Array.isArray(rejectedApplyUrls) ? rejectedApplyUrls : [])
-    .map(normalizedJobUrl)
-    .filter(Boolean));
-  if (!rejectedUrls.size) return jobs;
+export function isLiveOfficialVerificationStale(job, now = Date.now()) {
+  if (!isLiveOfficialJob(job) || job.verificationStatus === "unavailable") return false;
+  if (job.verificationStatus !== "verified") return true;
+  const verifiedAt = Date.parse(job.verifiedAt ?? "");
+  return !Number.isFinite(verifiedAt) || now - verifiedAt >= liveVerificationMaxAgeMs;
+}
+
+export function applyLiveUrlVerificationResults(jobs, checks) {
+  const checkByUrl = new Map();
+  (Array.isArray(checks) ? checks : []).forEach((check) => {
+    const key = normalizedJobUrl(check?.url);
+    if (!key || !["open", "closed", "unknown"].includes(check?.state)) return;
+    checkByUrl.set(key, check);
+  });
+  if (!checkByUrl.size) return jobs;
 
   return jobs.map((job) => {
     if (!isLiveOfficialJob(job)) return job;
-    const jobUrls = [job.applyUrl, job.url].map(normalizedJobUrl);
-    if (!jobUrls.some((url) => rejectedUrls.has(url))) return job;
+    const check = [job.applyUrl, job.url]
+      .map(normalizedJobUrl)
+      .map((url) => checkByUrl.get(url))
+      .find(Boolean);
+    if (!check) return job;
+    if (check.state === "closed") {
+      return {
+        ...job,
+        verificationStatus: "unavailable",
+        isNew: false,
+        updated: "官网确认岗位已失效",
+      };
+    }
+    if (check.state === "open") {
+      return {
+        ...job,
+        verificationStatus: "verified",
+        verifiedAt: check.checkedAt || job.verifiedAt,
+        updated: "链接已重新核验",
+      };
+    }
     return {
       ...job,
-      verificationStatus: "unavailable",
-      isNew: false,
-      updated: "官网确认岗位已失效",
+      verificationStatus: "unknown",
+      updated: "官网链接暂时无法确认",
     };
   });
+}
+
+export function markRejectedLiveJobs(jobs, rejectedApplyUrls) {
+  return applyLiveUrlVerificationResults(
+    jobs,
+    (Array.isArray(rejectedApplyUrls) ? rejectedApplyUrls : []).map((url) => ({ url, state: "closed" })),
+  );
 }
 
 export function getLiveOfficialApplyUrls(jobs, market, employmentType, limit = 80) {

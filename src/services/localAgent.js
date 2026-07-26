@@ -22,3 +22,11 @@ export function searchOfficialJobs(payload) {
     body: JSON.stringify(payload),
   });
 }
+
+export function verifyOfficialJobUrls(urls) {
+  return requestJson("/v1/jobs/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ urls }),
+  });
+}

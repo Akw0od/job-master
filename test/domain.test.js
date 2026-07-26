@@ -2,9 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   analyzeJobForResume,
+  applyLiveUrlVerificationResults,
   filterDiscoverableJobs,
   getJobDiscoveryBatch,
   getLiveOfficialApplyUrls,
+  isLiveOfficialVerificationStale,
   markRejectedLiveJobs,
   mergeJobPools,
   normalizeSearchedJobs,
@@ -170,6 +172,48 @@ test("explicitly rejected live jobs remain tracked but leave the discovery list"
     getLiveOfficialApplyUrls(marked, "美国", "实习"),
     ["https://jobs.ashbyhq.com/replit/12737078-74c7-4e63-98a7-5e8da1e9deb1", "https://example.com/jobs/still-open"],
   );
+});
+
+test("live official roles expire after 24 hours and propagate open, closed, and unknown checks safely", () => {
+  const url = "https://example.com/jobs/tracked-123";
+  const verifiedAt = "2026-07-24T00:00:00.000Z";
+  const trackedJob = {
+    id: "live-tracked",
+    company: "Example",
+    role: "Engineer Intern",
+    market: "美国",
+    employmentType: "实习",
+    stage: "进行中",
+    status: "收藏",
+    userTracked: true,
+    applyUrl: url,
+    url,
+    jdSource: "official-summary",
+    verificationStatus: "verified",
+    verifiedAt,
+  };
+
+  assert.equal(isLiveOfficialVerificationStale(trackedJob, Date.parse(verifiedAt) + (24 * 60 * 60 * 1000) - 1), false);
+  assert.equal(isLiveOfficialVerificationStale(trackedJob, Date.parse(verifiedAt) + (24 * 60 * 60 * 1000)), true);
+  assert.equal(isLiveOfficialVerificationStale({ ...trackedJob, source: "手动 JD", id: "manual-1" }, Date.now()), false);
+
+  const open = applyLiveUrlVerificationResults([trackedJob], [{
+    url,
+    state: "open",
+    checkedAt: "2026-07-25T01:00:00.000Z",
+  }]);
+  assert.equal(open[0].verificationStatus, "verified");
+  assert.equal(open[0].verifiedAt, "2026-07-25T01:00:00.000Z");
+
+  const unknown = applyLiveUrlVerificationResults([trackedJob], [{ url, state: "unknown" }]);
+  assert.equal(unknown[0].verificationStatus, "unknown");
+  assert.notEqual(unknown[0].verificationStatus, "unavailable");
+
+  const closed = applyLiveUrlVerificationResults([trackedJob], [{ url, state: "closed" }]);
+  assert.equal(closed[0].verificationStatus, "unavailable");
+  assert.equal(closed[0].userTracked, true);
+  assert.equal(closed[0].status, "收藏");
+  assert.deepEqual(filterDiscoverableJobs(closed, "美国", "实习"), []);
 });
 
 test("only explicit user actions create tracked applications", () => {

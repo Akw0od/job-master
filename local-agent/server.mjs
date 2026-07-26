@@ -2,7 +2,13 @@ import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { codexLoginStatus, runCodexPrompt } from "./codexRunner.mjs";
-import { buildJobSearchPrompt, normalizeJobSearchPayload, verifyJobSearchResult } from "./jobSearch.mjs";
+import {
+  buildJobSearchPrompt,
+  normalizeJobSearchPayload,
+  normalizeJobUrlVerificationPayload,
+  verifyJobSearchResult,
+  verifyJobUrls,
+} from "./jobSearch.mjs";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const schemaPath = join(currentDir, "response.schema.json");
@@ -115,6 +121,7 @@ export { buildCodexArgs, formatCodexError } from "./codexRunner.mjs";
 export async function startLocalAgentServer({ port = 4317 } = {}) {
   const login = await codexLoginStatus();
   let busy = false;
+  let verificationBusy = false;
   const server = createServer(async (request, response) => {
     const origin = request.headers.origin;
     if (origin && !isAllowedOrigin(origin)) {
@@ -140,6 +147,30 @@ export async function startLocalAgentServer({ port = 4317 } = {}) {
     }
 
     const requestUrl = new URL(request.url, `http://${request.headers.host ?? "127.0.0.1"}`);
+    if (request.method === "POST" && requestUrl.pathname === "/v1/jobs/verify") {
+      if (verificationBusy) {
+        sendJson(response, 429, { error: "The local agent is already verifying a job link." }, origin);
+        return;
+      }
+      try {
+        const rawBody = await readRequestBody(request);
+        let rawPayload;
+        try {
+          rawPayload = JSON.parse(rawBody);
+        } catch {
+          throw new Error("职位链接核验请求格式无效。");
+        }
+        const payload = normalizeJobUrlVerificationPayload(rawPayload);
+        verificationBusy = true;
+        sendJson(response, 200, await verifyJobUrls(payload.urls), origin);
+      } catch (error) {
+        sendJson(response, 400, { error: error.message || "Official job verification failed." }, origin);
+      } finally {
+        verificationBusy = false;
+      }
+      return;
+    }
+
     if (request.method === "POST" && requestUrl.pathname === "/v1/jobs/search") {
       if (!login.available) {
         sendJson(response, 503, { error: login.detail }, origin);

@@ -448,6 +448,18 @@ export function normalizeJobSearchPayload(rawPayload) {
   };
 }
 
+export function normalizeJobUrlVerificationPayload(rawPayload) {
+  if (!rawPayload || typeof rawPayload !== "object" || Array.isArray(rawPayload)) {
+    throw new Error("职位链接核验请求格式无效。");
+  }
+  const urls = normalizeStringList(rawPayload.urls, { field: "职位链接", maxItems: 8, maxLength: 2048 });
+  if (!urls.length) throw new Error("至少提供一个具体职位链接。");
+  if (urls.some((url) => !isSpecificJobUrl(url))) {
+    throw new Error("职位链接必须是官网的具体职位或申请页。");
+  }
+  return { urls };
+}
+
 export function isSpecificJobUrl(value) {
   const url = normalizeUrl(value);
   if (!url || url.protocol !== "https:") return false;
@@ -522,7 +534,10 @@ export function normalizeJobSearchResult(
     jobs: [...unique.values()],
     searchedAt,
     rejectedCount: Math.max(0, (result.jobs?.length ?? 0) - unique.size),
-    rejectedApplyUrls: [...new Set(rejectedApplyUrls)].slice(0, 8),
+    // existingApplyUrls is capped to 80 at the request boundary. Do not trim
+    // deterministic closure results here: tracked closed roles must all be
+    // marked unavailable, not only the first page of them.
+    rejectedApplyUrls: [...new Set(rejectedApplyUrls)],
     notes: Array.isArray(result.notes) ? result.notes.map(String).slice(0, 4) : [],
   };
 }
@@ -595,6 +610,30 @@ async function checkJobUrl(job, requestUrl) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export async function verifyJobUrls(
+  urls,
+  { fetchImpl, requestImpl, resolveHostname, httpsRequestImpl, concurrency = verificationConcurrency } = {},
+) {
+  const requestedUrls = normalizeStringList(urls, { field: "职位链接", maxItems: 8, maxLength: 2048 });
+  if (!requestedUrls.length || requestedUrls.some((url) => !isSpecificJobUrl(url))) {
+    throw new Error("职位链接必须是官网的具体职位或申请页。");
+  }
+  const requestUrl = createCheckedRequester({ fetchImpl, requestImpl, resolveHostname, httpsRequestImpl });
+  const checkedAt = new Date().toISOString();
+  const checked = await mapWithConcurrency(
+    requestedUrls,
+    Math.max(1, Math.min(verificationConcurrency, Number.isInteger(concurrency) ? concurrency : verificationConcurrency)),
+    async (url) => ({ url, verification: await checkJobUrl({ applyUrl: url }, requestUrl) }),
+  );
+  return {
+    checks: checked.map(({ url, verification }) => ({
+      url,
+      state: verification.state,
+      checkedAt,
+    })),
+  };
 }
 
 async function mapWithConcurrency(items, limit, worker) {
