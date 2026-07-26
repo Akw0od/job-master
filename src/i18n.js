@@ -116,6 +116,8 @@ const englishCopy = {
   "待重新核验": "Needs link verification",
   "链接待重新核验": "Link needs verification",
   "链接已核验": "Link verified",
+  "官网确认岗位已失效": "Official site confirmed this role is unavailable",
+  "官网已确认该岗位失效，已保留你的求职记录。": "The official site confirmed this role is unavailable. Your application record has been kept.",
   "用户粘贴": "Pasted by the user",
   "实时官网搜索": "Live official-site search",
   "岗位重点是构建可靠的智能体工作流，覆盖模型评测、工具调用、人工审核和生产部署。": "Build reliable agent workflows spanning model evaluation, tool use, human review, and production deployment.",

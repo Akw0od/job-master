@@ -42,9 +42,12 @@ import {
 } from "./domain/applications";
 import {
   analyzeJobForResume,
+  filterDiscoverableJobs,
   getDiscoveryKey,
   getJobDiscoveryBatch,
+  getLiveOfficialApplyUrls,
   inferJobTrack,
+  markRejectedLiveJobs,
   mergeJobPools,
   normalizeSearchedJobs,
   rankJobsForResume,
@@ -66,6 +69,12 @@ import {
 } from "./resume/resumeModel";
 
 const tabs = ["岗位匹配", "定制简历", "追踪"];
+
+function verificationStatusCopy(status) {
+  if (status === "verified") return "链接已核验";
+  if (status === "unavailable") return "官网确认岗位已失效";
+  return "待重新核验";
+}
 
 function getSuggestionScope(suggestion) {
   if (!suggestion) return "suggestion:none";
@@ -275,12 +284,7 @@ export function App() {
   ].filter(Boolean).join(" ");
   const appliedJobs = applications.filter((job) => ["已投递", "面试", "Offer", "未通过"].includes(normalizeApplicationStatus(job.status)));
   const trackedJobs = applications.filter(isTrackedApplication);
-  const discoveryJobs = applications.filter((job) => (
-    job.stage !== "已归档"
-    && job.market === targetMarket
-    && (job.employmentType ?? "全职") === employmentType
-    && !["已投递", "面试", "Offer", "未通过"].includes(normalizeApplicationStatus(job.status))
-  ));
+  const discoveryJobs = filterDiscoverableJobs(applications, targetMarket, employmentType);
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
   const filteredDiscoveryJobs = discoveryJobs.filter((job) => (
     !normalizedSearchQuery
@@ -521,6 +525,7 @@ export function App() {
             employmentType: requestedEmploymentType,
             targetRole,
             keywords: customKeywords,
+            existingApplyUrls: getLiveOfficialApplyUrls(applications, market, requestedEmploymentType),
           });
           const normalizedLiveJobs = normalizeSearchedJobs(liveSearchResult, market, requestedEmploymentType);
           const nextLiveJobs = {
@@ -528,6 +533,7 @@ export function App() {
             [discoveryKey]: normalizedLiveJobs,
           };
           setLiveJobsByDiscoveryKey(nextLiveJobs);
+          setApplications((current) => markRejectedLiveJobs(current, liveSearchResult.rejectedApplyUrls));
           poolsForRun = mergeJobPools(jobPoolsByMarket, nextLiveJobs);
         } catch (error) {
           liveSearchError = error.message;
@@ -1341,6 +1347,10 @@ export function App() {
   }
 
   function openJobSource(job) {
+    if (job?.verificationStatus === "unavailable") {
+      setToast("官网已确认该岗位失效，已保留你的求职记录。");
+      return;
+    }
     const applicationUrl = job?.applyUrl || (job?.source === "手动 JD" ? job.url : "");
     if (!applicationUrl || !isSpecificApplicationUrl(applicationUrl)) {
       setToast("这个岗位缺少具体申请链接，不会跳转到公司招聘首页。请重新导入并补充职位链接。");
@@ -1374,6 +1384,10 @@ export function App() {
 
   function launchApplicationAssist() {
     if (!selected) return;
+    if (selected.verificationStatus === "unavailable") {
+      setToast("官网已确认该岗位失效，已保留你的求职记录。");
+      return;
+    }
     if (!contactProfileReady || !applicationConsent.contact) {
       setToast("先补齐姓名和邮箱，并明确允许使用联系方式。");
       return;
@@ -1766,7 +1780,7 @@ export function App() {
                 <div>
                   <dt>{t("链接状态")}</dt>
                   <dd>
-                    {t(selected.verificationStatus === "verified" ? "链接已核验" : "待重新核验")}
+                    {t(verificationStatusCopy(selected.verificationStatus))}
                     {selected.verifiedAt
                       ? ` · ${new Date(selected.verifiedAt).toLocaleDateString(uiLanguage === "en" ? "en-US" : "zh-CN")}`
                       : ""}
@@ -2399,7 +2413,7 @@ export function App() {
                                 {job.matchSignals?.length > 0 && (
                                   <span className="match-signal-row">{t("匹配：")}{job.matchSignals.join(" · ")}</span>
                                 )}
-                                <small>{job.source} · {t(job.verificationStatus === "verified" ? "链接已核验" : "待重新核验")}</small>
+                                <small>{job.source} · {t(verificationStatusCopy(job.verificationStatus))}</small>
                               </span>
                               <CaretRight size={18} />
                             </button>

@@ -16,6 +16,7 @@ const targetRoleTracks = {
 };
 
 const accentOptions = ["ink", "blue", "violet", "slate", "mono"];
+const terminalDiscoveryStatuses = new Set(["已投递", "面试", "Offer", "未通过"]);
 
 export function getDiscoveryKey(market, employmentType) {
   return `${market}:${employmentType}`;
@@ -155,6 +156,66 @@ export function normalizeSearchedJobs(searchResult, market, employmentType) {
     jdSource: "official-summary",
     jdComplete: Boolean(job.jdText && job.jdText.length >= 120),
   }));
+}
+
+function normalizedJobUrl(value) {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    return url.href.replace(/\/$/, "");
+  } catch {
+    return "";
+  }
+}
+
+function isLiveOfficialJob(job) {
+  return String(job?.id ?? "").startsWith("live-") && job?.jdSource === "official-summary";
+}
+
+export function markRejectedLiveJobs(jobs, rejectedApplyUrls) {
+  const rejectedUrls = new Set((Array.isArray(rejectedApplyUrls) ? rejectedApplyUrls : [])
+    .map(normalizedJobUrl)
+    .filter(Boolean));
+  if (!rejectedUrls.size) return jobs;
+
+  return jobs.map((job) => {
+    if (!isLiveOfficialJob(job)) return job;
+    const jobUrls = [job.applyUrl, job.url].map(normalizedJobUrl);
+    if (!jobUrls.some((url) => rejectedUrls.has(url))) return job;
+    return {
+      ...job,
+      verificationStatus: "unavailable",
+      isNew: false,
+      updated: "官网确认岗位已失效",
+    };
+  });
+}
+
+export function getLiveOfficialApplyUrls(jobs, market, employmentType, limit = 80) {
+  const uniqueUrls = new Map();
+  jobs.forEach((job) => {
+    if (
+      !isLiveOfficialJob(job)
+      || job.stage === "已归档"
+      || job.market !== market
+      || (job.employmentType ?? "全职") !== employmentType
+      || job.verificationStatus === "unavailable"
+    ) return;
+    const url = String(job.applyUrl || job.url || "").trim();
+    const key = normalizedJobUrl(url);
+    if (key && !uniqueUrls.has(key)) uniqueUrls.set(key, url);
+  });
+  return [...uniqueUrls.values()].slice(0, limit);
+}
+
+export function filterDiscoverableJobs(jobs, market, employmentType) {
+  return jobs.filter((job) => (
+    job.stage !== "已归档"
+    && job.market === market
+    && (job.employmentType ?? "全职") === employmentType
+    && job.verificationStatus !== "unavailable"
+    && !terminalDiscoveryStatuses.has(job.status)
+  ));
 }
 
 export function mergeJobPools(staticPools, liveJobsByDiscoveryKey = {}) {

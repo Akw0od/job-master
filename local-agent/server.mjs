@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { codexLoginStatus, runCodexPrompt } from "./codexRunner.mjs";
-import { buildJobSearchPrompt, verifyJobSearchResult } from "./jobSearch.mjs";
+import { buildJobSearchPrompt, normalizeJobSearchPayload, verifyJobSearchResult } from "./jobSearch.mjs";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const schemaPath = join(currentDir, "response.schema.json");
@@ -151,12 +151,13 @@ export async function startLocalAgentServer({ port = 4317 } = {}) {
       }
       try {
         const rawBody = await readRequestBody(request);
-        const payload = JSON.parse(rawBody);
-        for (const field of ["market", "employmentType", "targetRole"]) {
-          if (typeof payload[field] !== "string" || !payload[field].trim()) {
-            throw new Error(`Missing ${field}.`);
-          }
+        let rawPayload;
+        try {
+          rawPayload = JSON.parse(rawBody);
+        } catch {
+          throw new Error("搜索请求格式无效。");
         }
+        const payload = normalizeJobSearchPayload(rawPayload);
         busy = true;
         const result = await runCodexPrompt({
           prompt: buildJobSearchPrompt(payload),

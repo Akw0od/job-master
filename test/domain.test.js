@@ -2,7 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   analyzeJobForResume,
+  filterDiscoverableJobs,
   getJobDiscoveryBatch,
+  getLiveOfficialApplyUrls,
+  markRejectedLiveJobs,
   mergeJobPools,
   normalizeSearchedJobs,
   rankJobsForResume,
@@ -101,6 +104,72 @@ test("live jobs merge ahead of stale static entries and remain market-specific",
   assert.equal(merged.美国.length, 1);
   assert.equal(merged.美国[0].id, "live");
   assert.equal(merged.美国[0].employmentType, "实习");
+});
+
+test("explicitly rejected live jobs remain tracked but leave the discovery list", () => {
+  const socureUrl = "https://jobs.ashbyhq.com/socure/e54f1700-c922-4bcc-a087-45b24717f974";
+  const jobs = [
+    {
+      id: "live-socure",
+      company: "Socure",
+      role: "Engineer Intern",
+      market: "美国",
+      employmentType: "实习",
+      stage: "进行中",
+      status: "收藏",
+      userTracked: true,
+      isNew: true,
+      updated: "本轮实时发现",
+      applyUrl: socureUrl,
+      url: socureUrl,
+      jdSource: "official-summary",
+      verificationStatus: "verified",
+    },
+    {
+      id: "live-replit",
+      company: "Replit",
+      role: "Software Engineering Intern",
+      market: "美国",
+      employmentType: "实习",
+      stage: "进行中",
+      status: "待处理",
+      applyUrl: "https://jobs.ashbyhq.com/replit/12737078-74c7-4e63-98a7-5e8da1e9deb1",
+      url: "https://jobs.ashbyhq.com/replit/12737078-74c7-4e63-98a7-5e8da1e9deb1",
+      jdSource: "official-summary",
+      verificationStatus: "verified",
+    },
+    {
+      id: "live-old-tracked",
+      company: "Still Open",
+      role: "Intern",
+      market: "美国",
+      employmentType: "实习",
+      stage: "进行中",
+      status: "收藏",
+      userTracked: true,
+      applyUrl: "https://example.com/jobs/still-open",
+      jdSource: "official-summary",
+      verificationStatus: "verified",
+    },
+  ];
+
+  const marked = markRejectedLiveJobs(jobs, [socureUrl]);
+
+  assert.equal(marked.length, 3);
+  assert.equal(marked[0].userTracked, true);
+  assert.equal(marked[0].status, "收藏");
+  assert.equal(marked[0].verificationStatus, "unavailable");
+  assert.equal(marked[0].isNew, false);
+  assert.equal(marked[0].updated, "官网确认岗位已失效");
+  assert.equal(marked[2], jobs[2]);
+  assert.deepEqual(
+    filterDiscoverableJobs(marked, "美国", "实习").map((job) => job.id),
+    ["live-replit", "live-old-tracked"],
+  );
+  assert.deepEqual(
+    getLiveOfficialApplyUrls(marked, "美国", "实习"),
+    ["https://jobs.ashbyhq.com/replit/12737078-74c7-4e63-98a7-5e8da1e9deb1", "https://example.com/jobs/still-open"],
+  );
 });
 
 test("only explicit user actions create tracked applications", () => {
