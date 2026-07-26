@@ -4,6 +4,11 @@ export const dashboardStorageKey = "job-master-dashboard-v3";
 export const previousDashboardStorageKey = "job-master-dashboard-v2";
 export const legacyDashboardStorageKey = "job-master-dashboard-v1";
 export const dashboardSchemaVersion = 3;
+export const dashboardStorageKeys = [
+  dashboardStorageKey,
+  previousDashboardStorageKey,
+  legacyDashboardStorageKey,
+];
 
 function normalizeApplications(applications) {
   if (!Array.isArray(applications)) return [];
@@ -52,4 +57,8 @@ export function writeDashboard(dashboard, storage = window.localStorage) {
   };
   storage.setItem(dashboardStorageKey, JSON.stringify(nextDashboard));
   return nextDashboard;
+}
+
+export function clearKnownDashboards(storage = window.localStorage) {
+  dashboardStorageKeys.forEach((key) => storage.removeItem(key));
 }

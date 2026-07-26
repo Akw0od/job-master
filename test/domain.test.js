@@ -20,6 +20,7 @@ import {
 import {
   dashboardSchemaVersion,
   dashboardStorageKey,
+  clearKnownDashboards,
   legacyDashboardStorageKey,
   previousDashboardStorageKey,
   readDashboard,
@@ -275,6 +276,31 @@ test("dashboard storage migrates the previous v2 key and normalizes paper size",
   const migrated = readDashboard(storage);
   assert.equal(migrated.schemaVersion, 3);
   assert.equal(migrated.resumePageSize, "Letter");
+});
+
+test("dashboard storage propagates write failures and clears only Jobmaster keys", () => {
+  const quotaStorage = {
+    getItem: () => null,
+    setItem: () => { throw new Error("quota exceeded"); },
+  };
+  assert.throws(() => writeDashboard({ applications: [] }, quotaStorage), /quota exceeded/);
+
+  const values = new Map([
+    [dashboardStorageKey, "current"],
+    [previousDashboardStorageKey, "previous"],
+    [legacyDashboardStorageKey, "legacy"],
+    ["another-site-key", "keep"],
+  ]);
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: (key) => values.delete(key),
+  };
+  clearKnownDashboards(storage);
+  assert.equal(values.has(dashboardStorageKey), false);
+  assert.equal(values.has(previousDashboardStorageKey), false);
+  assert.equal(values.has(legacyDashboardStorageKey), false);
+  assert.equal(values.get("another-site-key"), "keep");
 });
 
 test("resume parser preserves header and section order", () => {

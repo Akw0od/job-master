@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowSquareOut,
@@ -30,6 +30,7 @@ import { ResumeDocument } from "./components/ResumeDocument";
 import { ApplicationAssistModal } from "./components/modals/ApplicationAssistModal";
 import { EditModal } from "./components/modals/EditModal";
 import { CustomDirectionModal, ImportJobModal } from "./components/modals/JobInputModals";
+import { LocalDataModal } from "./components/modals/LocalDataModal";
 import { ResumeExportModal } from "./components/modals/ResumeExportModal";
 import { jobPoolsByMarket } from "./data/jobCatalog";
 import {
@@ -66,7 +67,13 @@ import {
   navigateReservedApplicationWindow,
   reserveApplicationWindow,
 } from "./services/applicationWindow";
-import { readDashboard, writeDashboard } from "./storage/dashboardStorage";
+import {
+  BackupError,
+  createEncryptedDashboardBackup,
+  decryptDashboardBackup,
+  readEncryptedBackupFile,
+} from "./services/dashboardBackup";
+import { clearKnownDashboards, readDashboard, writeDashboard } from "./storage/dashboardStorage";
 import {
   applyResumeChange,
   assessResumeStructure,
@@ -216,6 +223,18 @@ export function App() {
   const [targetRole, setTargetRole] = useState(() => savedDashboard.targetRole ?? "AI Agent Engineer");
   const [customDirections, setCustomDirections] = useState(() => savedDashboard.customDirections ?? []);
   const [isCustomDirectionOpen, setIsCustomDirectionOpen] = useState(false);
+  const [isLocalDataOpen, setIsLocalDataOpen] = useState(false);
+  const [saveStatus, setSaveStatus] = useState("saving");
+  const [lastSavedAt, setLastSavedAt] = useState("");
+  const [backupPassword, setBackupPassword] = useState("");
+  const [backupError, setBackupError] = useState("");
+  const [isExportingBackup, setIsExportingBackup] = useState(false);
+  const [restoreFile, setRestoreFile] = useState(null);
+  const [restorePassword, setRestorePassword] = useState("");
+  const [restoreError, setRestoreError] = useState("");
+  const [isRestoringBackup, setIsRestoringBackup] = useState(false);
+  const [clearConfirmation, setClearConfirmation] = useState("");
+  const [clearError, setClearError] = useState("");
   const [customDirectionDraft, setCustomDirectionDraft] = useState({ name: "", keywords: "" });
   const [resumeVersions, setResumeVersions] = useState(() => savedDashboard.resumeVersions ?? []);
   const [activeResumeVersionId, setActiveResumeVersionId] = useState(() => savedDashboard.activeResumeVersionId ?? null);
@@ -275,6 +294,8 @@ export function App() {
   const [isApplicationAssistOpen, setIsApplicationAssistOpen] = useState(false);
   const [isAgentThinking, setIsAgentThinking] = useState(false);
   const [agentSuggestion, setAgentSuggestion] = useState(() => savedDashboard.agentSuggestion ?? null);
+  const saveFailureNotifiedRef = useRef(false);
+  const isDataReloadingRef = useRef(false);
 
   const activeJobPoolsByMarket = useMemo(
     () => mergeJobPools(jobPoolsByMarket, liveJobsByDiscoveryKey),
@@ -425,6 +446,130 @@ export function App() {
     : "";
   const selectedApplicationAssist = selected ? applicationAssists[selected.id] ?? {} : {};
   const contactProfileReady = Boolean(candidateProfile.name.trim() && candidateProfile.email.trim());
+
+  const buildDashboardSnapshot = useCallback(() => (
+    {
+      uiLanguage,
+      profileReady,
+      selectedDirection,
+      applications,
+      selectedId,
+      step,
+      reviewStatus,
+      resumeFile,
+      reviewDrafts,
+      notesByJobId,
+      targetMarket,
+      employmentType,
+      outputLanguage,
+      targetRole,
+      customDirections,
+      resumeVersions,
+      activeResumeVersionId,
+      activeResumeTab,
+      resumePageSize,
+      candidateProfile,
+      applicationConsent,
+      applicationAssists,
+      discoveryCycles,
+      seenJobIdsByMarket,
+      liveJobsByDiscoveryKey,
+      recommendationMeta,
+      agentSuggestion,
+      resumeChangeDecisions,
+    }
+  ), [
+    activeResumeTab, activeResumeVersionId, agentSuggestion, applicationAssists,
+    applicationConsent, applications, candidateProfile, customDirections,
+    discoveryCycles, employmentType, liveJobsByDiscoveryKey, notesByJobId,
+    outputLanguage, profileReady, recommendationMeta, resumeChangeDecisions,
+    resumeFile, resumePageSize, resumeVersions, reviewDrafts, reviewStatus,
+    seenJobIdsByMarket, selectedDirection, selectedId, step, targetMarket,
+    targetRole, uiLanguage,
+  ]);
+
+  const formattedLastSavedAt = lastSavedAt
+    ? new Date(lastSavedAt).toLocaleTimeString(uiLanguage === "en" ? "en-US" : "zh-CN", { hour: "2-digit", minute: "2-digit" })
+    : "";
+
+  function closeLocalDataModal() {
+    setIsLocalDataOpen(false);
+    setBackupPassword("");
+    setRestorePassword("");
+    setRestoreFile(null);
+    setBackupError("");
+    setRestoreError("");
+    setClearError("");
+    setClearConfirmation("");
+  }
+
+  function downloadEncryptedBackup(backup) {
+    const blob = new Blob([JSON.stringify(backup)], { type: "application/json" });
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = `jobmaster-local-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+  }
+
+  async function exportLocalDataBackup() {
+    setBackupError("");
+    if (backupPassword.length < 10) {
+      setBackupError("备份密码至少需要 10 个字符。");
+      return;
+    }
+    setIsExportingBackup(true);
+    try {
+      downloadEncryptedBackup(await createEncryptedDashboardBackup(buildDashboardSnapshot(), backupPassword));
+      setBackupPassword("");
+      setToast("已下载加密本地草稿备份。请单独安全保存备份密码。");
+    } catch (error) {
+      setBackupError(error instanceof BackupError
+        ? error.message
+        : "无法创建加密备份。请检查浏览器是否支持本地加密，并稍后重试。");
+    } finally {
+      setIsExportingBackup(false);
+    }
+  }
+
+  async function restoreLocalDataBackup() {
+    setRestoreError("");
+    if (!restoreFile || restorePassword.length < 10) {
+      setRestoreError("请选择备份文件并输入至少 10 个字符的备份密码。");
+      return;
+    }
+    setIsRestoringBackup(true);
+    try {
+      const backup = await readEncryptedBackupFile(restoreFile);
+      const restoredDashboard = await decryptDashboardBackup(backup, restorePassword);
+      isDataReloadingRef.current = true;
+      writeDashboard(restoredDashboard);
+      setToast("已恢复浏览器本地草稿，正在重新加载以应用恢复内容。");
+      window.setTimeout(() => window.location.reload(), 550);
+    } catch {
+      isDataReloadingRef.current = false;
+      setRestoreError("无法恢复备份。请确认密码、文件完整性与 Jobmaster 备份格式；当前本地草稿未被覆盖。");
+    } finally {
+      setIsRestoringBackup(false);
+    }
+  }
+
+  function clearLocalData() {
+    if (clearConfirmation !== "DELETE LOCAL DRAFTS") return;
+    setClearError("");
+    try {
+      isDataReloadingRef.current = true;
+      clearKnownDashboards();
+      setToast("已删除本网站的 Jobmaster 本地草稿，正在重新加载。");
+      window.setTimeout(() => window.location.reload(), 550);
+    } catch {
+      isDataReloadingRef.current = false;
+      setClearError("无法删除本地草稿。请检查浏览器存储权限后重试。");
+    }
+  }
 
   function applyRankedRecommendations(rankedJobs) {
     const poolIds = new Set(allActiveJobPool.map((job) => job.id));
@@ -779,51 +924,23 @@ export function App() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
+      if (isDataReloadingRef.current) return;
+      setSaveStatus("saving");
       try {
-        writeDashboard({
-          uiLanguage,
-          profileReady,
-          selectedDirection,
-          applications,
-          selectedId,
-          step,
-          reviewStatus,
-          resumeFile,
-          reviewDrafts,
-          notesByJobId,
-          targetMarket,
-          employmentType,
-          outputLanguage,
-          targetRole,
-          customDirections,
-          resumeVersions,
-          activeResumeVersionId,
-          activeResumeTab,
-          resumePageSize,
-          candidateProfile,
-          applicationConsent,
-          applicationAssists,
-          discoveryCycles,
-          seenJobIdsByMarket,
-          liveJobsByDiscoveryKey,
-          recommendationMeta,
-          agentSuggestion,
-          resumeChangeDecisions,
-        });
+        writeDashboard(buildDashboardSnapshot());
+        setLastSavedAt(new Date().toISOString());
+        setSaveStatus("saved");
+        saveFailureNotifiedRef.current = false;
       } catch {
-        // The prototype remains usable when a privacy mode blocks local persistence.
+        setSaveStatus("error");
+        if (!saveFailureNotifiedRef.current) {
+          saveFailureNotifiedRef.current = true;
+          setToast("浏览器未能写入本地草稿。请导出加密备份、清理本站数据或检查浏览器空间。");
+        }
       }
     }, 120);
     return () => window.clearTimeout(timer);
-  }, [
-    applications, notesByJobId, uiLanguage,
-    profileReady, resumeFile, reviewDrafts, reviewStatus, selectedDirection,
-    selectedId, step, targetMarket, employmentType, outputLanguage, targetRole, customDirections,
-    resumeVersions, activeResumeVersionId, activeResumeTab, resumePageSize,
-    candidateProfile, applicationConsent, applicationAssists, discoveryCycles, seenJobIdsByMarket,
-    liveJobsByDiscoveryKey,
-    recommendationMeta, agentSuggestion, resumeChangeDecisions,
-  ]);
+  }, [buildDashboardSnapshot]);
 
   useEffect(() => {
     requestAnimationFrame(() => stageScrollRef.current?.scrollTo({ top: 0 }));
@@ -1707,7 +1824,7 @@ export function App() {
             <Plus size={18} />
             {t("粘贴 JD")}
           </button>
-          <button className="avatar" aria-label={t("账户")} onClick={() => setToast(t("账户设置将在后续版本接入。"))}>
+          <button className="avatar" aria-label={t("本地数据")} onClick={() => setIsLocalDataOpen(true)}>
             AM
           </button>
         </div>
@@ -2723,6 +2840,31 @@ export function App() {
 
       {activeEditor && (
         <EditModal t={t} uiLanguage={uiLanguage} editor={activeEditor} onChange={updateReviewEditor} onCancel={closeReviewEditor} onSave={saveReviewEditor} />
+      )}
+
+      {isLocalDataOpen && (
+        <LocalDataModal
+          t={t}
+          saveStatus={saveStatus}
+          lastSavedAt={formattedLastSavedAt}
+          backupPassword={backupPassword}
+          onBackupPasswordChange={setBackupPassword}
+          onExport={exportLocalDataBackup}
+          backupError={backupError}
+          isExporting={isExportingBackup}
+          restoreFile={restoreFile}
+          restorePassword={restorePassword}
+          onRestoreFileChange={setRestoreFile}
+          onRestorePasswordChange={setRestorePassword}
+          onRestore={restoreLocalDataBackup}
+          restoreError={restoreError}
+          isRestoring={isRestoringBackup}
+          clearConfirmation={clearConfirmation}
+          onClearConfirmationChange={setClearConfirmation}
+          onClear={clearLocalData}
+          clearError={clearError}
+          onClose={closeLocalDataModal}
+        />
       )}
 
       {isApplicationAssistOpen && selected && (
