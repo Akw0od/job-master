@@ -692,6 +692,27 @@
   }
 }
 
+@media (max-width: 480px) {
+  .modal-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .modal-actions .button {
+    width: 100%;
+  }
+}
+
+@media (max-width: 420px) {
+  .brand-name {
+    display: none;
+  }
+
+  .brand-lockup {
+    min-width: 30px;
+  }
+}
+
 * {
   box-sizing: border-box;
 }
@@ -7087,5 +7108,20 @@ progress::-webkit-progress-value {
 
   .resume-print-root .resume-source-change sup {
     display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .spin {
+    animation: none !important;
   }
 }

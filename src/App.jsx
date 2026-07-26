@@ -91,6 +91,7 @@ import {
   hasApplicationAssistSourceChanged,
   validateApplicationContact,
 } from "./services/applicationFieldPacket";
+import { getNextTabKey } from "./services/tabNavigation";
 import { clearKnownDashboards, readDashboard, writeDashboard } from "./storage/dashboardStorage";
 import {
   applyResumeChange,
@@ -895,6 +896,16 @@ export function App() {
   function goToReviewTab(tab) {
     setActiveTab(tab);
     requestAnimationFrame(() => reviewCanvasRef.current?.scrollTo({ top: 0, behavior: "smooth" }));
+  }
+
+  function handleApplicationTabKeyDown(event) {
+    const nextTab = getNextTabKey(tabs, activeTab, event.key);
+    if (!nextTab) return;
+    event.preventDefault();
+    goToReviewTab(nextTab);
+    requestAnimationFrame(() => {
+      document.getElementById(`application-tab-${tabs.indexOf(nextTab)}`)?.focus();
+    });
   }
 
   function closeReviewEditor() {
@@ -1908,11 +1919,11 @@ export function App() {
     <>
     <main className="app-shell">
       <header className="top-bar">
-        <div className="brand-lockup">
-          <span className="brand-mark">
-            <Sparkle size={18} weight="fill" />
+        <div className="brand-lockup" role="img" aria-label="Job Master">
+          <span className="brand-mark" aria-hidden="true">
+            <Sparkle size={18} weight="fill" aria-hidden="true" />
           </span>
-          <span>Job Master</span>
+          <span className="brand-name">Job Master</span>
         </div>
         <label className="search-shell">
           <MagnifyingGlass size={18} />
@@ -1928,8 +1939,9 @@ export function App() {
               }
             }}
             placeholder={t("搜索岗位、公司或来源...")}
+            aria-label={t("搜索岗位、公司或来源")}
           />
-          <kbd>⌘K</kbd>
+          <kbd aria-hidden="true">⌘K</kbd>
         </label>
         <div className="top-actions">
           <div className="language-switch" role="group" aria-label={uiLanguage === "en" ? "Interface language" : "界面语言"}>
@@ -1990,6 +2002,7 @@ export function App() {
                 key={key}
                 className={primarySection === key ? "active" : ""}
                 aria-label={label}
+                aria-current={primarySection === key ? "page" : undefined}
                 onClick={() => {
                   setStep(key);
                   setIsQueueCollapsed(false);
@@ -2048,11 +2061,17 @@ export function App() {
               </div>
             </div>
 
-          <nav className="tabs" aria-label={t("申请包分区")}>
-            {tabs.map((tab) => (
+          <nav className="tabs" role="tablist" aria-label={t("申请包分区")}>
+            {tabs.map((tab, index) => (
               <button
                 key={tab}
+                id={`application-tab-${index}`}
+                role="tab"
                 className={activeTab === tab ? "active" : ""}
+                aria-selected={activeTab === tab}
+                aria-controls="application-tab-panel"
+                tabIndex={activeTab === tab ? 0 : -1}
+                onKeyDown={handleApplicationTabKeyDown}
                 onClick={() => goToReviewTab(tab)}
               >
                 {t(tab)}
@@ -2075,7 +2094,7 @@ export function App() {
             </button>
           </div>
 
-          <div className="review-canvas" ref={reviewCanvasRef}>
+          <div id="application-tab-panel" className="review-canvas" ref={reviewCanvasRef} role="tabpanel" aria-labelledby={`application-tab-${tabs.indexOf(activeTab)}`}>
             {activeTab === "岗位匹配" && (
               <>
             <section className="analysis-block" ref={(node) => { reviewSectionRefs.current.analysis = node; }}>
@@ -2662,14 +2681,14 @@ export function App() {
                   </label>
                   <div className="compact-filter-group">
                     <span>{t("市场")}</span>
-                    <div className="segment compact">
-                      {["美国", "中国"].map((market) => <button key={market} className={targetMarket === market ? "selected" : ""} onClick={() => handleMarketChange(market)}>{t(market)}</button>)}
+                    <div className="segment compact" role="group" aria-label={t("市场")}>
+                      {["美国", "中国"].map((market) => <button key={market} className={targetMarket === market ? "selected" : ""} aria-pressed={targetMarket === market} onClick={() => handleMarketChange(market)}>{t(market)}</button>)}
                     </div>
                   </div>
                   <div className="compact-filter-group">
                     <span>{t("岗位类型")}</span>
-                    <div className="segment compact">
-                      {["全职", "实习"].map((type) => <button key={type} className={employmentType === type ? "selected" : ""} onClick={() => handleEmploymentTypeChange(type)}>{t(type)}</button>)}
+                    <div className="segment compact" role="group" aria-label={t("岗位类型")}>
+                      {["全职", "实习"].map((type) => <button key={type} className={employmentType === type ? "selected" : ""} aria-pressed={employmentType === type} onClick={() => handleEmploymentTypeChange(type)}>{t(type)}</button>)}
                     </div>
                   </div>
                   <label className="filter-summary">
@@ -2828,7 +2847,7 @@ export function App() {
                           <strong role="cell">{formatJobSignalScore(job)}</strong>
                           <label role="cell" className="application-status-select">
                             <StatusDot status={normalizeApplicationStatus(job.status)} />
-                            <select value={normalizeApplicationStatus(job.status)} onChange={(event) => { setSelectedId(job.id); setReviewStatus(event.target.value); setApplications((current) => current.map((item) => item.id === job.id ? { ...item, status: event.target.value, statusKey: statusKeyByLabel[event.target.value], userTracked: true, updated: "刚刚更新" } : item)); }}>
+                            <select aria-label={uiLanguage === "en" ? `Update ${job.company} ${job.role} status` : `更新${job.company}${job.role}的投递状态`} value={normalizeApplicationStatus(job.status)} onChange={(event) => { setSelectedId(job.id); setReviewStatus(event.target.value); setApplications((current) => current.map((item) => item.id === job.id ? { ...item, status: event.target.value, statusKey: statusKeyByLabel[event.target.value], userTracked: true, updated: "刚刚更新" } : item)); }}>
                               {statusOptions.filter((status) => status !== "已归档").map((status) => <option key={status} value={status}>{t(status)}</option>)}
                             </select>
                             <CaretDown size={14} />
@@ -2882,7 +2901,7 @@ export function App() {
           <h2>{t("投递状态")}</h2>
           <label className="select-shell">
             <StatusDot status={reviewStatus} />
-            <select value={reviewStatus} onChange={(event) => updateSelectedReviewStatus(event.target.value)}>
+            <select aria-label={t("投递状态")} value={reviewStatus} onChange={(event) => updateSelectedReviewStatus(event.target.value)}>
               {statusOptions.map((option) => (
                 <option key={option} value={option}>{t(option)}</option>
               ))}

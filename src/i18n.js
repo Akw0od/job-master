@@ -1,5 +1,6 @@
 const englishCopy = {
   "搜索岗位、公司或来源...": "Search roles, companies, or sources...",
+  "搜索岗位、公司或来源": "Search roles, companies, or sources",
   "正在读取…": "Reading...",
   "上传简历": "Upload resume",
   "上传当前简历": "Upload resume",
