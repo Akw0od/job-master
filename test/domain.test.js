@@ -6,8 +6,11 @@ import {
   filterDiscoverableJobs,
   getJobDiscoveryBatch,
   getLiveOfficialApplyUrls,
+  inferJobTrack,
   isLiveOfficialVerificationStale,
+  jobScoreAlgorithmVersion,
   markRejectedLiveJobs,
+  matchesJobSignal,
   mergeJobPools,
   normalizeSearchedJobs,
   rankJobsForResume,
@@ -22,6 +25,7 @@ import {
   dashboardStorageKey,
   clearKnownDashboards,
   legacyDashboardStorageKey,
+  oldestDashboardStorageKey,
   previousDashboardStorageKey,
   readDashboard,
   writeDashboard,
@@ -81,6 +85,47 @@ test("resume ranking has no artificial minimum score and exposes confidence", ()
   assert.equal(analyzed.score, 0);
   assert.equal(analyzed.matchConfidence, "needs-review");
   assert.equal(analyzed.matchLabel, "待评估");
+});
+
+test("signal matcher rejects ASCII substrings while accepting independent and normalized technical terms", () => {
+  assert.equal(matchesJobSignal("email maintained training capital javascript", "ai"), false);
+  assert.equal(matchesJobSignal("email maintained training capital javascript", "api"), false);
+  assert.equal(matchesJobSignal("email maintained training capital javascript", "java"), false);
+  assert.equal(matchesJobSignal("Build AI systems with RAG, C++, and full stack delivery.", "ai"), true);
+  assert.equal(matchesJobSignal("Build AI systems with RAG, C++, and full stack delivery.", "rag"), true);
+  assert.equal(matchesJobSignal("Build AI systems with RAG, C++, and full stack delivery.", "c++"), true);
+  assert.equal(matchesJobSignal("Build AI systems with RAG, C++, and full stack delivery.", "full-stack"), true);
+  assert.equal(matchesJobSignal("负责ＡＩ评测与模型部署", "ai"), true);
+});
+
+test("track inference has a deterministic SDE fallback for zero hits and ties", () => {
+  assert.equal(inferJobTrack("general role description with no known technical signals"), "sde");
+  assert.equal(inferJobTrack("Python"), "sde");
+});
+
+test("custom direction phrases use the same boundary-aware signal matcher", () => {
+  const customDirections = [{ name: "Full stack", keywords: ["full stack", "api"] }];
+  const matched = analyzeJobForResume({
+    id: "custom",
+    company: "Example",
+    role: "Full-stack Engineer",
+    summary: "Build API integrations.",
+    track: "sde",
+    evidence: [],
+  }, "Built a full-stack product with API integrations.", "Full stack", customDirections);
+  const falsePositive = analyzeJobForResume({
+    id: "capital",
+    company: "Example",
+    role: "Engineer",
+    summary: "Capital planning.",
+    track: "sde",
+    evidence: [],
+  }, "Built software.", "Full stack", customDirections);
+
+  assert.deepEqual(matched.matchSignals.slice(0, 2), ["full stack", "api"]);
+  assert.equal(matched.scoreBreakdown.customDirection, 14);
+  assert.equal(falsePositive.scoreBreakdown.customDirection, 0);
+  assert.equal(matched.jobScoreAlgorithmVersion, jobScoreAlgorithmVersion);
 });
 
 test("live jobs merge ahead of stale static entries and remain market-specific", () => {
@@ -264,7 +309,7 @@ test("dashboard storage migrates legacy tracking and writes a schema version", (
   assert.equal(JSON.parse(values.get(dashboardStorageKey)).schemaVersion, dashboardSchemaVersion);
 });
 
-test("dashboard storage migrates the previous v2 key and normalizes paper size", () => {
+test("dashboard storage migrates the previous v3 key and normalizes paper size", () => {
   const values = new Map([
     [previousDashboardStorageKey, JSON.stringify({ resumePageSize: "Letter", applications: [] })],
   ]);
@@ -274,8 +319,55 @@ test("dashboard storage migrates the previous v2 key and normalizes paper size",
   };
 
   const migrated = readDashboard(storage);
-  assert.equal(migrated.schemaVersion, 3);
+  assert.equal(migrated.schemaVersion, dashboardSchemaVersion);
   assert.equal(migrated.resumePageSize, "Letter");
+});
+
+test("dashboard storage invalidates old and malformed current score payloads", () => {
+  const validBreakdown = { targetDirection: 18, resumeKeywords: 14, confirmedEvidence: 10, customDirection: 0 };
+  const values = new Map([
+    [dashboardStorageKey, JSON.stringify({
+      applications: [
+        {
+          id: "old-score",
+          score: 96,
+          jobScoreAlgorithmVersion: 1,
+          scoreBreakdown: { direction: 96 },
+          matchSignals: ["false positive"],
+          matchedEvidence: ["not verified"],
+          missingSignals: ["stale"],
+          matchConfidence: "evidence-backed",
+          matchLabel: "证据充分",
+        },
+        {
+          id: "malformed-current",
+          score: 46,
+          jobScoreAlgorithmVersion,
+          scoreBreakdown: { ...validBreakdown, customDirection: undefined },
+          matchSignals: ["broken"],
+        },
+        {
+          id: "current",
+          score: 42,
+          jobScoreAlgorithmVersion,
+          scoreBreakdown: validBreakdown,
+          matchSignals: ["api"],
+          matchConfidence: "limited",
+          matchLabel: "有限匹配",
+        },
+      ],
+    })],
+  ]);
+  const storage = { getItem: (key) => values.get(key) ?? null };
+  const migrated = readDashboard(storage);
+
+  assert.equal(migrated.applications[0].score, null);
+  assert.deepEqual(migrated.applications[0].matchSignals, []);
+  assert.equal(migrated.applications[0].scoreBreakdown, null);
+  assert.equal(migrated.applications[1].score, null);
+  assert.equal(migrated.applications[1].matchConfidence, "needs-review");
+  assert.equal(migrated.applications[2].score, 42);
+  assert.deepEqual(migrated.applications[2].matchSignals, ["api"]);
 });
 
 test("dashboard storage propagates write failures and clears only Jobmaster keys", () => {
@@ -289,6 +381,7 @@ test("dashboard storage propagates write failures and clears only Jobmaster keys
     [dashboardStorageKey, "current"],
     [previousDashboardStorageKey, "previous"],
     [legacyDashboardStorageKey, "legacy"],
+    [oldestDashboardStorageKey, "oldest"],
     ["another-site-key", "keep"],
   ]);
   const storage = {
@@ -300,6 +393,7 @@ test("dashboard storage propagates write failures and clears only Jobmaster keys
   assert.equal(values.has(dashboardStorageKey), false);
   assert.equal(values.has(previousDashboardStorageKey), false);
   assert.equal(values.has(legacyDashboardStorageKey), false);
+  assert.equal(values.has(oldestDashboardStorageKey), false);
   assert.equal(values.get("another-site-key"), "keep");
 });
 

@@ -46,11 +46,14 @@ import {
   analyzeJobForResume,
   applyLiveUrlVerificationResults,
   filterDiscoverableJobs,
+  formatSignalScore,
   getDiscoveryKey,
   getJobDiscoveryBatch,
   getLiveOfficialApplyUrls,
   inferJobTrack,
   isLiveOfficialVerificationStale,
+  hasCurrentJobScore,
+  jobScoreAlgorithmVersion,
   markRejectedLiveJobs,
   mergeJobPools,
   normalizeSearchedJobs,
@@ -207,6 +210,7 @@ export function App() {
   const previousAppliedCountRef = useRef(
     (savedDashboard.applications ?? []).filter((job) => ["已投递", "面试", "Offer", "未通过"].includes(normalizeApplicationStatus(job.status))).length,
   );
+  const hasInitializedScoreRefreshRef = useRef(false);
   const [profileReady, setProfileReady] = useState(() => savedDashboard.profileReady ?? false);
   const [selectedDirection, setSelectedDirection] = useState(() => savedDashboard.selectedDirection ?? null);
   const [applications, setApplications] = useState(() => savedDashboard.applications ?? []);
@@ -325,6 +329,9 @@ export function App() {
     [activeJobPoolsByMarket],
   );
   const selected = applications.find((job) => job.id === selectedId) ?? applications[0];
+  const formatJobSignalScore = (job) => (
+    hasCurrentJobScore(job) ? formatSignalScore(job.score, uiLanguage) : t("待刷新")
+  );
   const storedMasterResume = resumeVersions.find((version) => version.id === "master-resume");
   const validResumeVersionCount = resumeVersions.filter((version) => !isPlaceholderResume(version.content)).length;
   const needsResumeReimport = Boolean(resumeFile && (!resumeFile.characters || !storedMasterResume || isPlaceholderResume(storedMasterResume.content)));
@@ -683,6 +690,7 @@ export function App() {
       newCount,
       remainingCount,
       discoveryMode,
+      jobScoreAlgorithmVersion,
     });
   }
 
@@ -802,7 +810,7 @@ export function App() {
       } else if (discoverableCount === 0) {
         setToast(`当前没有可验证的${market}${requestedEmploymentType}岗位，可粘贴真实 JD 建立岗位版。`);
       } else {
-        setToast(`${market}${requestedEmploymentType}岗位缓存已看完；本次只重新计算匹配度，没有伪装成新增岗位。`);
+        setToast(`${market}${requestedEmploymentType}岗位缓存已看完；本次只重新计算信号分，没有伪装成新增岗位。`);
       }
     } finally {
       setIsRefreshingJobs(false);
@@ -1017,8 +1025,14 @@ export function App() {
         statusKey: job.statusKey,
         stage: job.stage,
         score: job.score,
+        jobScoreAlgorithmVersion: job.jobScoreAlgorithmVersion,
+        scoreBreakdown: job.scoreBreakdown,
+        matchConfidence: job.matchConfidence,
+        matchLabel: job.matchLabel,
         updated: job.updated,
         matchSignals: job.matchSignals,
+        matchedEvidence: job.matchedEvidence,
+        missingSignals: job.missingSignals,
         isNew: job.isNew,
         userTracked: job.userTracked,
       };
@@ -1027,6 +1041,10 @@ export function App() {
 
   useEffect(() => {
     if (!masterResumeVersion?.content?.trim()) return;
+    if (!hasInitializedScoreRefreshRef.current) {
+      hasInitializedScoreRefreshRef.current = true;
+      return;
+    }
     setApplications((current) => current.map((job) => (
       job.stage === "进行中"
         ? analyzeJobForResume(job, masterResumeVersion.content, targetRole, customDirections)
@@ -2106,21 +2124,29 @@ export function App() {
 
             <section className="score-block">
               <div className="score-layout">
-                <div className="score-ring" style={{ "--score": `${selected.score ?? 0}%` }}>
-                  <span>{selected.score ?? "—"}</span>
+                <div className="score-ring" role="img" aria-label={formatJobSignalScore(selected)} style={{ "--score": `${hasCurrentJobScore(selected) ? selected.score : 0}%` }}>
+                  <span>{hasCurrentJobScore(selected) ? selected.score : "—"}</span>
                   <small>{t(selected.matchLabel ?? "待评估")}</small>
                 </div>
                 <div className="score-evidence">
-                  <span>{t("评分依据")}</span>
+                  <span>{t("信号分依据")}</span>
                   <strong>{selected.matchSignals?.length ? selected.matchSignals.join(" · ") : t("目标方向与岗位轨道")}</strong>
-                  <p>{t("匹配分只来自目标方向、Master Resume 关键词和已确认事实；证据不足时会降低置信度。")}</p>
+                  <p>{t("信号分只用于当前列表排序，不是录取概率、资格判断或 ATS 分数。")}</p>
                 </div>
               </div>
+              {hasCurrentJobScore(selected) ? (
+                <dl className="score-breakdown">
+                  <div><dt>{t("目标方向")}</dt><dd>{selected.scoreBreakdown.targetDirection} {t("分")}</dd></div>
+                  <div><dt>{t("简历关键词")}</dt><dd>{selected.scoreBreakdown.resumeKeywords} {t("分")}</dd></div>
+                  <div><dt>{t("已确认事实")}</dt><dd>{selected.scoreBreakdown.confirmedEvidence} {t("分")}</dd></div>
+                  <div><dt>{t("自定义方向")}</dt><dd>{selected.scoreBreakdown.customDirection} {t("分")}</dd></div>
+                </dl>
+              ) : <p className="score-refresh-note">{t("此岗位的信号分待刷新；不会沿用旧算法的分数或依据。")}</p>}
               <div className="callout">
                 <strong>{t(selectedResumeEvidence.length > 0 ? "已定位到可核对事实" : "尚未定位到直接证据")}</strong>
                 <p>{selectedResumeEvidence.length > 0
                   ? uiLanguage === "en" ? `Matched ${selectedResumeEvidence.join(", ")} in the Master Resume. Review every rewrite after generating the job version.` : `Master Resume 中命中 ${selectedResumeEvidence.join("、")}；生成岗位版后仍需逐条审核改写。`
-                  : t("当前分数主要来自方向和技能关键词。生成岗位版时不会补写原简历不存在的经历或指标。")}</p>
+                  : t("当前信号分主要来自方向和技能关键词。生成岗位版时不会补写原简历不存在的经历或指标。")}</p>
               </div>
             </section>
 
@@ -2606,7 +2632,7 @@ export function App() {
                     <FileArrowUp size={22} />
                     <div>
                       <strong>{t(needsResumeReimport ? "重新上传以读取简历原文" : "先上传一份现有简历")}</strong>
-                      <span>{t(needsResumeReimport ? "旧版本只保存了文件名；重新读取后，岗位匹配才会使用真实简历内容。" : "有了主简历后，匹配分、缺口和定制建议才会基于你的真实经历。")}</span>
+                      <span>{t(needsResumeReimport ? "旧版本只保存了文件名；重新读取后，岗位匹配才会使用真实简历内容。" : "有了主简历后，信号分、缺口和定制建议才会基于你的真实经历。")}</span>
                     </div>
                     <button className="button primary" disabled={isResumeParsing} onClick={triggerResumePicker}>{t(isResumeParsing ? "正在读取…" : needsResumeReimport ? "重新上传" : "上传简历")}</button>
                   </section>
@@ -2680,7 +2706,7 @@ export function App() {
                             : ` · ${t("尚未按当前市场刷新")}`}
                         </span>
                       </div>
-                      <button onClick={() => setSearchQuery("")}><FunnelSimple size={16} />{t("匹配度排序")}</button>
+                      <button onClick={() => setSearchQuery("")}><FunnelSimple size={16} />{t("信号分排序")}</button>
                     </div>
                     {discoveryJobs.length === 0 ? (
                       <div className="jobs-empty-state">
@@ -2709,15 +2735,13 @@ export function App() {
                                   <strong>{job.role}</strong>
                                   <span className="job-card-badges">
                                     {job.isNew && <i>{t("本轮新增")}</i>}
-                                    <em>{job.score == null
-                                      ? t("待评估")
-                                      : uiLanguage === "en" ? `${job.score}% match` : `${job.score}% 匹配`}</em>
+                                    <em>{formatJobSignalScore(job)}</em>
                                   </span>
                                 </span>
                                 <span>{job.company} · {t(job.location)} · {t(job.employmentType)}{job.type && job.type !== job.employmentType ? ` · ${t(job.type)}` : ""}</span>
                                 <p>{t(job.summary)}</p>
                                 {job.matchSignals?.length > 0 && (
-                                  <span className="match-signal-row">{t("匹配：")}{job.matchSignals.join(" · ")}</span>
+                                  <span className="match-signal-row">{t("信号：")}{job.matchSignals.join(" · ")}</span>
                                 )}
                                 <small>{job.source} · {t(verificationStatusCopy(job))}</small>
                               </span>
@@ -2737,7 +2761,7 @@ export function App() {
                     <span className="insight-icon"><Sparkle size={18} weight="fill" /></span>
                     <span>{t("推荐依据")}</span>
                     <h2>{t(selectedDirection ?? targetRole)}</h2>
-                    <p>{t("根据 Master Resume 中出现的技能、经历关键词和目标方向重新评分。缺少证据的要求只会标为缺口，不会被写成经历。")}</p>
+                    <p>{t("根据 Master Resume 中出现的技能、经历关键词和目标方向重新计算信号分。缺少证据的要求只会标为缺口，不会被写成经历。")}</p>
                     {recommendationMeta && (
                       <div className="recommendation-source">
                         <span>{t("本次匹配来源")}</span>
@@ -2791,7 +2815,7 @@ export function App() {
                   ) : (
                     <div className="application-table" role="table" aria-label={t("投递记录")}>
                       <div className="application-table-row header" role="row">
-                        <span role="columnheader">{t("岗位")}</span><span role="columnheader">{t("匹配")}</span><span role="columnheader">{t("状态")}</span><span role="columnheader">{t("最近更新")}</span><span role="columnheader">{t("操作")}</span>
+                        <span role="columnheader">{t("岗位")}</span><span role="columnheader">{t("信号分")}</span><span role="columnheader">{t("状态")}</span><span role="columnheader">{t("最近更新")}</span><span role="columnheader">{t("操作")}</span>
                       </div>
                       {trackedJobs.map((job) => (
                         <div className="application-table-row" role="row" key={job.id}>
@@ -2801,7 +2825,7 @@ export function App() {
                               <span><strong>{job.role}</strong><small>{job.company} · {t(job.location)}</small></span>
                             </button>
                           </span>
-                          <strong role="cell">{job.score == null ? t("待评估") : `${job.score}%`}</strong>
+                          <strong role="cell">{formatJobSignalScore(job)}</strong>
                           <label role="cell" className="application-status-select">
                             <StatusDot status={normalizeApplicationStatus(job.status)} />
                             <select value={normalizeApplicationStatus(job.status)} onChange={(event) => { setSelectedId(job.id); setReviewStatus(event.target.value); setApplications((current) => current.map((item) => item.id === job.id ? { ...item, status: event.target.value, statusKey: statusKeyByLabel[event.target.value], userTracked: true, updated: "刚刚更新" } : item)); }}>
@@ -2825,18 +2849,16 @@ export function App() {
                   <span className="empty-mark">
                     <CheckCircle size={26} weight="fill" />
                   </span>
-                  <p>第五步 · 申请包审核</p>
-                  <h1>先选一个岗位，再进入人工审稿台。</h1>
-                  <span>
-                    申请包审核会展示岗位分析、匹配分、缺口报告、证据选择、简历 bullet、申请回答和提交前安全门。
-                  </span>
+                  <p>{t("申请包审核")}</p>
+                  <h1>{t("先选一个岗位，再进入人工审稿台。")}</h1>
+                  <span>{t("申请包审核会展示岗位分析、信号分、缺口报告、证据选择、简历 bullet、申请回答和提交前安全门。")}</span>
                   <div className="empty-actions">
                     <button className="button primary" onClick={runJobRadar}>
                       <Sparkle size={18} weight="fill" />
-                      查找岗位
+                      {t("查找岗位")}
                     </button>
                     <button className="button quiet" onClick={openImport}>
-                      手动粘贴 JD
+                      {t("手动粘贴 JD")}
                     </button>
                   </div>
                 </div>
@@ -2888,9 +2910,7 @@ export function App() {
           </div>
           <div className="rail-group">
             <span>{t("岗位来源")}</span>
-            <strong>{t(selected.source)} · {selected.score == null
-              ? t("待评估")
-              : uiLanguage === "en" ? `${selected.score}% match` : `${selected.score}% 匹配`}</strong>
+            <strong>{t(selected.source)} · {formatJobSignalScore(selected)}</strong>
           </div>
           <div className="rail-group">
             <span>{t("职位申请")}</span>

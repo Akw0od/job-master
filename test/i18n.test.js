@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { formatSignalScore } from "../src/domain/jobDiscovery.js";
 import { translateUiText } from "../src/i18n.js";
 
 test("application-assist approval copy does not imply automatic form filling", () => {
@@ -14,4 +15,11 @@ test("application-assist approval copy does not imply automatic form filling", (
     translateUiText(missingLink, "en"),
     "This role has no specific application link. Add a specific role link before reviewing and opening its field packet.",
   );
+});
+
+test("signal-score labels stay explicit in both interface languages", () => {
+  assert.equal(formatSignalScore(46, "zh"), "信号分 46");
+  assert.equal(formatSignalScore(46, "en"), "Signal score 46");
+  assert.equal(translateUiText("信号分排序", "en"), "Sort by signal score");
+  assert.equal(translateUiText("信号分", "en"), "Signal score");
 });

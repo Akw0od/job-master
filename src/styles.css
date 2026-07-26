@@ -3634,6 +3634,41 @@ textarea:focus-visible,
   line-height: 1.55;
 }
 
+.score-breakdown {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 14px 0 0;
+}
+
+.score-breakdown div {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid #e5e8ef;
+  border-radius: 8px;
+  background: #fbfbfd;
+}
+
+.score-breakdown dt {
+  color: #737a8d;
+  font-size: 11px;
+}
+
+.score-breakdown dd {
+  margin: 0;
+  color: #2a3244;
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.score-refresh-note {
+  margin: 14px 0 0;
+  color: #6c7282;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .bar-row {
   display: grid;
   gap: 7px;
@@ -5753,6 +5788,10 @@ progress::-webkit-progress-value {
     grid-template-columns: 1fr;
   }
 
+  .score-breakdown {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .import-fields {
     grid-template-columns: 1fr;
   }
@@ -6488,7 +6527,7 @@ progress::-webkit-progress-value {
 .application-table-row {
   min-height: 76px;
   display: grid;
-  grid-template-columns: minmax(280px, 1.7fr) 70px 156px 120px 72px;
+  grid-template-columns: minmax(280px, 1.7fr) minmax(132px, 0.75fr) 156px 120px 72px;
   align-items: center;
   gap: 18px;
   padding: 10px 18px;

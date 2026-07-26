@@ -1,23 +1,38 @@
 import { inferLegacyTracking } from "../domain/applications.js";
+import { hasCurrentJobScore, jobScoreAlgorithmVersion } from "../domain/jobDiscovery.js";
 import { normalizeResumeRewriteConsent } from "../services/resumeRewriteConsent.js";
 
-export const dashboardStorageKey = "job-master-dashboard-v3";
-export const previousDashboardStorageKey = "job-master-dashboard-v2";
-export const legacyDashboardStorageKey = "job-master-dashboard-v1";
-export const dashboardSchemaVersion = 3;
+export const dashboardStorageKey = "job-master-dashboard-v4";
+export const previousDashboardStorageKey = "job-master-dashboard-v3";
+export const legacyDashboardStorageKey = "job-master-dashboard-v2";
+export const oldestDashboardStorageKey = "job-master-dashboard-v1";
+export const dashboardSchemaVersion = 4;
 export const dashboardStorageKeys = [
   dashboardStorageKey,
   previousDashboardStorageKey,
   legacyDashboardStorageKey,
+  oldestDashboardStorageKey,
 ];
 
 function normalizeApplications(applications) {
   if (!Array.isArray(applications)) return [];
-  return applications.map((job) => ({
-    ...job,
-    userTracked: inferLegacyTracking(job),
-    score: job.matchConfidence ? job.score : null,
-  }));
+  return applications.map((job) => {
+    if (!hasCurrentJobScore(job)) {
+      return {
+        ...job,
+        userTracked: inferLegacyTracking(job),
+        score: null,
+        jobScoreAlgorithmVersion: null,
+        scoreBreakdown: null,
+        matchSignals: [],
+        matchedEvidence: [],
+        missingSignals: [],
+        matchConfidence: "needs-review",
+        matchLabel: "待评估",
+      };
+    }
+    return { ...job, userTracked: inferLegacyTracking(job) };
+  });
 }
 
 export function migrateDashboard(rawDashboard) {
@@ -26,6 +41,9 @@ export function migrateDashboard(rawDashboard) {
     ...raw,
     schemaVersion: dashboardSchemaVersion,
     applications: normalizeApplications(raw.applications),
+    recommendationMeta: raw.recommendationMeta?.jobScoreAlgorithmVersion === jobScoreAlgorithmVersion
+      ? raw.recommendationMeta
+      : null,
     liveJobsByDiscoveryKey: raw.liveJobsByDiscoveryKey && typeof raw.liveJobsByDiscoveryKey === "object"
       ? raw.liveJobsByDiscoveryKey
       : {},
@@ -41,12 +59,8 @@ export function migrateDashboard(rawDashboard) {
 
 export function readDashboard(storage = window.localStorage) {
   try {
-    const current = storage.getItem(dashboardStorageKey);
-    if (current) return migrateDashboard(JSON.parse(current));
-    const previous = storage.getItem(previousDashboardStorageKey);
-    if (previous) return migrateDashboard(JSON.parse(previous));
-    const legacy = storage.getItem(legacyDashboardStorageKey);
-    return migrateDashboard(legacy ? JSON.parse(legacy) : {});
+    const serialized = dashboardStorageKeys.map((key) => storage.getItem(key)).find(Boolean);
+    return migrateDashboard(serialized ? JSON.parse(serialized) : {});
   } catch {
     return migrateDashboard({});
   }

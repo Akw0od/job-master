@@ -27,9 +27,10 @@ It is not an auto-apply bot. Browser assistance reviews a per-role, per-resume l
 - Manually add, delete, and rewrite content in derived resumes.
 - Filter job discovery independently by US / China and Full-time / Internship.
 - Search current official role pages only when the user clicks Refresh, then validate the specific role URL before adding a result.
-- Keep candidate resume text and personal data out of web search; re-score returned roles locally from the Master Resume and built-in or custom directions.
+- Keep candidate resume text and personal data out of web search; calculate a local signal score for returned roles from the Master Resume and built-in or custom directions.
 - Preserve the complete user-pasted JD as a job snapshot and include it in job-specific rewrite requests.
-- Use calibrated match confidence without an artificial minimum score.
+- Use a 0–100 local signal score only to sort the current list, never as an admission probability, eligibility determination, or ATS score. Its visible breakdown shows actual target-direction, resume-keyword, confirmed-fact, and custom-direction contributions alongside evidence labels.
+- English technical terms use word-boundary matching (`AI` is never inferred from `email`), while Chinese terms can use safe containment. When the algorithm version changes, old signal scores and derived inputs are cleared to Needs refresh rather than displayed as current.
 - Add a role to Applications only after the user saves it, starts tailoring, or opens the application page.
 - Track candidate-facing states from Saved through Applied, Interview, Offer, Rejected, and Archived.
 - Before each opening of a specific job application URL, re-review the local field packet for that exact role and resume version. Only individually authorized contact details, explicit education sections, and explicit experience or project sections can be copied to the system clipboard.

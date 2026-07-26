@@ -18,6 +18,17 @@ const targetRoleTracks = {
 const accentOptions = ["ink", "blue", "violet", "slate", "mono"];
 const terminalDiscoveryStatuses = new Set(["已投递", "面试", "Offer", "未通过"]);
 const liveVerificationMaxAgeMs = 24 * 60 * 60 * 1000;
+export const jobScoreAlgorithmVersion = 2;
+const scoreBreakdownKeys = ["targetDirection", "resumeKeywords", "confirmedEvidence", "customDirection"];
+const trackTieBreakOrder = ["sde", "product_engineer", "data_platform", "risk_engineer", "fde", "ai_agent_engineer"];
+
+export function hasCurrentJobScore(job) {
+  if (job?.jobScoreAlgorithmVersion !== jobScoreAlgorithmVersion) return false;
+  if (!Number.isFinite(job.score) || job.score < 0 || job.score > 100) return false;
+  return scoreBreakdownKeys.every((key) => (
+    Number.isFinite(job.scoreBreakdown?.[key]) && job.scoreBreakdown[key] >= 0
+  ));
+}
 
 export function getDiscoveryKey(market, employmentType) {
   return `${market}:${employmentType}`;
@@ -45,7 +56,29 @@ export function getJobDiscoveryBatch(jobPoolsByMarket, market, employmentType, c
 }
 
 function normalizeKeyword(value) {
-  return String(value ?? "").trim().toLowerCase();
+  return String(value ?? "").normalize("NFKC").trim().toLowerCase();
+}
+
+function escapeSignalPattern(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function matchesJobSignal(text, keyword) {
+  const normalizedText = normalizeKeyword(text);
+  const normalizedKeyword = normalizeKeyword(keyword);
+  if (!normalizedText || !normalizedKeyword) return false;
+  if (!/^[\x00-\x7f]+$/u.test(normalizedKeyword)) return normalizedText.includes(normalizedKeyword);
+
+  const phrasePattern = escapeSignalPattern(normalizedKeyword)
+    .replace(/[\s-]+/g, "[-\\s]+");
+  // Keep Unicode word boundaries for Latin-script false-positive protection,
+  // while allowing standard technical terms beside Han text (for example AI评测).
+  return new RegExp(`(?:(?<![\\p{L}\\p{N}])|(?<=[\\p{Script=Han}]))${phrasePattern}(?:(?![\\p{L}\\p{N}])|(?=[\\p{Script=Han}]))`, "u").test(normalizedText);
+}
+
+export function formatSignalScore(score, language = "zh") {
+  if (!Number.isFinite(score)) return language === "en" ? "Needs refresh" : "待刷新";
+  return language === "en" ? `Signal score ${score}` : `信号分 ${score}`;
 }
 
 function getPreferredTracks(targetRole, customDirections) {
@@ -55,8 +88,8 @@ function getPreferredTracks(targetRole, customDirections) {
     .map(([track, keywords]) => ({
       track,
       hits: customKeywords.filter((keyword) => keywords.some((profileKeyword) => (
-        normalizeKeyword(profileKeyword).includes(keyword)
-        || keyword.includes(normalizeKeyword(profileKeyword))
+        matchesJobSignal(profileKeyword, keyword)
+        || matchesJobSignal(keyword, profileKeyword)
       ))).length,
     }))
     .filter((item) => item.hits > 0)
@@ -69,31 +102,30 @@ function getPreferredTracks(targetRole, customDirections) {
 }
 
 export function inferJobTrack(jobText) {
-  const normalized = normalizeKeyword(jobText);
-  return Object.entries(jobKeywordProfiles)
+  const rankedTracks = Object.entries(jobKeywordProfiles)
     .map(([track, keywords]) => ({
       track,
-      hits: keywords.filter((keyword) => normalized.includes(normalizeKeyword(keyword))).length,
+      hits: keywords.filter((keyword) => matchesJobSignal(jobText, keyword)).length,
     }))
-    .sort((a, b) => b.hits - a.hits)[0]?.track ?? "sde";
+    .sort((a, b) => b.hits - a.hits || trackTieBreakOrder.indexOf(a.track) - trackTieBreakOrder.indexOf(b.track));
+  return rankedTracks[0]?.hits > 0 ? rankedTracks[0].track : "sde";
 }
 
 export function analyzeJobForResume(job, resumeText, targetRole, customDirections = []) {
-  const normalizedResume = String(resumeText ?? "").toLowerCase();
   const { customKeywords, preferredTracks } = getPreferredTracks(targetRole, customDirections);
   const track = job.track || inferJobTrack(`${job.role} ${job.summary} ${job.jdText}`);
   const keywords = jobKeywordProfiles[track] ?? [];
-  const matchedKeywords = keywords.filter((keyword) => normalizedResume.includes(normalizeKeyword(keyword)));
-  const missingKeywords = keywords.filter((keyword) => !normalizedResume.includes(normalizeKeyword(keyword)));
-  const normalizedJob = `${job.role ?? ""} ${job.summary ?? ""} ${job.jdText ?? ""} ${track}`.toLowerCase();
-  const customMatches = customKeywords.filter((keyword) => normalizedJob.includes(keyword));
-  const matchedEvidence = (job.evidence ?? []).filter((evidence) => normalizedResume.includes(normalizeKeyword(evidence)));
+  const matchedKeywords = keywords.filter((keyword) => matchesJobSignal(resumeText, keyword));
+  const missingKeywords = keywords.filter((keyword) => !matchesJobSignal(resumeText, keyword));
+  const jobText = `${job.role ?? ""} ${job.summary ?? ""} ${job.jdText ?? ""} ${track}`;
+  const customMatches = customKeywords.filter((keyword) => matchesJobSignal(jobText, keyword));
+  const matchedEvidence = (job.evidence ?? []).filter((evidence) => matchesJobSignal(resumeText, evidence));
   const trackIndex = preferredTracks.indexOf(track);
   const trackPoints = trackIndex === 0 ? 18 : trackIndex === 1 ? 12 : trackIndex === 2 ? 6 : 0;
   const keywordPoints = Math.min(40, matchedKeywords.length * 7);
   const evidencePoints = Math.min(30, matchedEvidence.length * 10);
   const customPoints = Math.min(20, customMatches.length * 7);
-  const score = Math.min(95, trackPoints + keywordPoints + evidencePoints + customPoints);
+  const score = Math.min(100, trackPoints + keywordPoints + evidencePoints + customPoints);
   const matchConfidence = matchedEvidence.length >= 2
     ? "evidence-backed"
     : matchedEvidence.length === 1 || matchedKeywords.length >= 4
@@ -112,13 +144,14 @@ export function analyzeJobForResume(job, resumeText, targetRole, customDirection
     ...job,
     track,
     score,
+    jobScoreAlgorithmVersion,
     matchConfidence,
     matchLabel,
     matchedEvidence,
     matchSignals: [...new Set([...customMatches, ...matchedKeywords])].slice(0, 6),
     missingSignals: missingKeywords.slice(0, 5),
     scoreBreakdown: {
-      direction: trackPoints,
+      targetDirection: trackPoints,
       resumeKeywords: keywordPoints,
       confirmedEvidence: evidencePoints,
       customDirection: customPoints,
