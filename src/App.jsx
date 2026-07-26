@@ -80,6 +80,14 @@ import {
   normalizeResumeRewriteConsent,
   summarizeResumeRewritePayload,
 } from "./services/resumeRewriteConsent";
+import {
+  buildApplicationFieldPacket,
+  buildApplicationSourceFingerprint,
+  canLaunchApplicationAssist,
+  createApplicationAssistAudit,
+  hasApplicationAssistSourceChanged,
+  validateApplicationContact,
+} from "./services/applicationFieldPacket";
 import { clearKnownDashboards, readDashboard, writeDashboard } from "./storage/dashboardStorage";
 import {
   applyResumeChange,
@@ -292,13 +300,15 @@ export function App() {
     location: "",
     linkedin: "",
   });
-  const [applicationConsent, setApplicationConsent] = useState(() => savedDashboard.applicationConsent ?? {
+  const [applicationAssistAuthorization, setApplicationAssistAuthorization] = useState({
     contact: false,
     education: false,
     experience: false,
   });
+  const [isApplicationAssistConfirmed, setIsApplicationAssistConfirmed] = useState(false);
   const [applicationAssists, setApplicationAssists] = useState(() => savedDashboard.applicationAssists ?? {});
   const [isApplicationAssistOpen, setIsApplicationAssistOpen] = useState(false);
+  const [isApplicationAssistLaunching, setIsApplicationAssistLaunching] = useState(false);
   const [isAgentThinking, setIsAgentThinking] = useState(false);
   const [agentSuggestion, setAgentSuggestion] = useState(() => savedDashboard.agentSuggestion ?? null);
   const [resumeRewriteConsent, setResumeRewriteConsent] = useState(() => normalizeResumeRewriteConsent(savedDashboard.resumeRewriteConsent));
@@ -367,6 +377,26 @@ export function App() {
         || version.target === `${selected.company} ${selected.role}`
       ))
     : null;
+  const selectedJobResumeContent = selectedJobResumeVersion?.content ?? "";
+  const applicationProfileName = String(candidateProfile.name ?? "");
+  const applicationProfileEmail = String(candidateProfile.email ?? "");
+  const applicationProfilePhone = String(candidateProfile.phone ?? "");
+  const applicationProfileLocation = String(candidateProfile.location ?? "");
+  const applicationProfileLinkedin = String(candidateProfile.linkedin ?? "");
+  const applicationFieldPacketInput = JSON.stringify({
+    profile: {
+      name: applicationProfileName,
+      email: applicationProfileEmail,
+      phone: applicationProfilePhone,
+      location: applicationProfileLocation,
+      linkedin: applicationProfileLinkedin,
+    },
+    resumeText: String(selectedJobResumeContent),
+  });
+  const applicationFieldPacket = useMemo(() => {
+    const { profile, resumeText } = JSON.parse(applicationFieldPacketInput);
+    return buildApplicationFieldPacket(profile, resumeText);
+  }, [applicationFieldPacketInput]);
   const activeJobSuggestion = selected && agentSuggestion?.layer === "job" && agentSuggestion.jobId === selected.id
     ? agentSuggestion
     : null;
@@ -454,7 +484,27 @@ export function App() {
         : t("尚未生成岗位版简历。先核对匹配依据，再从当前简历创建可审核的岗位版本。")
     : "";
   const selectedApplicationAssist = selected ? applicationAssists[selected.id] ?? {} : {};
-  const contactProfileReady = Boolean(candidateProfile.name.trim() && candidateProfile.email.trim());
+  const applicationContactValidation = validateApplicationContact(candidateProfile);
+  const applicationAssistSourceFingerprint = buildApplicationSourceFingerprint({
+    candidateProfile,
+    resumeText: selectedJobResumeContent,
+    job: selected,
+    resumeVersionId: selectedJobResumeVersion?.id ?? null,
+  });
+  const applicationAssistSourceChanged = selected
+    ? hasApplicationAssistSourceChanged(selectedApplicationAssist, {
+        candidateProfile,
+        resumeText: selectedJobResumeContent,
+        job: selected,
+        resumeVersionId: selectedJobResumeVersion?.id ?? null,
+      })
+    : false;
+  const canLaunchCurrentApplicationAssist = canLaunchApplicationAssist({
+    contactValidation: applicationContactValidation,
+    authorization: applicationAssistAuthorization,
+    isConfirmed: isApplicationAssistConfirmed,
+    isLaunching: isApplicationAssistLaunching,
+  });
 
   const buildDashboardSnapshot = useCallback(() => (
     {
@@ -478,7 +528,6 @@ export function App() {
       activeResumeTab,
       resumePageSize,
       candidateProfile,
-      applicationConsent,
       applicationAssists,
       discoveryCycles,
       seenJobIdsByMarket,
@@ -490,7 +539,7 @@ export function App() {
     }
   ), [
     activeResumeTab, activeResumeVersionId, agentSuggestion, applicationAssists,
-    applicationConsent, applications, candidateProfile, customDirections,
+    applications, candidateProfile, customDirections,
     discoveryCycles, employmentType, liveJobsByDiscoveryKey, notesByJobId,
     outputLanguage, profileReady, recommendationMeta, resumeChangeDecisions,
     resumeFile, resumePageSize, resumeRewriteConsent, resumeVersions, reviewDrafts, reviewStatus,
@@ -862,7 +911,7 @@ export function App() {
         setActiveEditor(null);
       } else if (isImportOpen) {
         setIsImportOpen(false);
-      } else if (isApplicationAssistOpen) {
+      } else if (isApplicationAssistOpen && !isApplicationAssistLaunching) {
         setIsApplicationAssistOpen(false);
       } else if (isCustomDirectionOpen) {
         setIsCustomDirectionOpen(false);
@@ -871,7 +920,7 @@ export function App() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [activeEditor, isImportOpen, isApplicationAssistOpen, isCustomDirectionOpen]);
+  }, [activeEditor, isImportOpen, isApplicationAssistOpen, isApplicationAssistLaunching, isCustomDirectionOpen]);
 
   useEffect(() => {
     document.documentElement.lang = uiLanguage === "en" ? "en" : "zh-CN";
@@ -1037,6 +1086,10 @@ export function App() {
     mobileQuery.addEventListener("change", collapseQueueForMobile);
     return () => mobileQuery.removeEventListener("change", collapseQueueForMobile);
   }, [isReviewReady]);
+
+  useEffect(() => {
+    if (isApplicationAssistOpen) setIsApplicationAssistConfirmed(false);
+  }, [applicationAssistSourceFingerprint, isApplicationAssistOpen]);
 
   async function executeResumeRewrite(rewrite) {
     if (!rewrite || isAgentThinking) return false;
@@ -1532,14 +1585,13 @@ export function App() {
       return false;
     }
     const requiresFreshVerification = isLiveOfficialVerificationStale(job);
-    let reservedApplicationWindow = null;
+    if (requiresFreshVerification && isJobUrlVerifying(job)) return false;
+    const reservedApplicationWindow = reserveApplicationWindow(window.open.bind(window));
+    if (!reservedApplicationWindow) {
+      setToast(t("浏览器拦截了申请页预留窗口。请允许弹窗后重新打开此岗位。"));
+      return false;
+    }
     if (requiresFreshVerification) {
-      if (isJobUrlVerifying(job)) return false;
-      reservedApplicationWindow = reserveApplicationWindow(window.open.bind(window));
-      if (!reservedApplicationWindow) {
-        setToast(t("浏览器拦截了申请页预留窗口。请允许弹窗后重新打开此岗位。"));
-        return false;
-      }
       setVerifyingJobIds((current) => [...current, job.id]);
       setApplications((current) => current.map((item) => (
         item.id === job.id ? { ...item, userTracked: true, updated: "正在重新核验官网链接" } : item
@@ -1569,13 +1621,10 @@ export function App() {
         return false;
       }
     }
-    if (requiresFreshVerification) {
-      if (!navigateReservedApplicationWindow(reservedApplicationWindow, applicationUrl)) {
-        setToast(t("申请页预留窗口已关闭，未自动打开。请重新打开此岗位。"));
-        return false;
-      }
-    } else {
-      window.open(applicationUrl, "_blank", "noopener,noreferrer");
+    if (!navigateReservedApplicationWindow(reservedApplicationWindow, applicationUrl)) {
+      closeReservedApplicationWindow(reservedApplicationWindow);
+      setToast(t("申请页预留窗口已关闭，未自动打开。请重新打开此岗位。"));
+      return false;
     }
     setApplications((current) => current.map((item) => (
       item.id === job.id ? { ...item, userTracked: true, updated: "刚刚打开申请页" } : item
@@ -1586,51 +1635,88 @@ export function App() {
 
   function updateCandidateProfile(field, value) {
     setCandidateProfile((current) => ({ ...current, [field]: value }));
+    setIsApplicationAssistConfirmed(false);
   }
 
-  function toggleApplicationConsent(field) {
-    setApplicationConsent((current) => ({ ...current, [field]: !current[field] }));
+  function toggleApplicationAssistAuthorization(field) {
+    if (!applicationFieldPacket.groups.find((group) => group.id === field)?.fields.length) return;
+    setApplicationAssistAuthorization((current) => ({ ...current, [field]: !current[field] }));
+    setIsApplicationAssistConfirmed(false);
   }
 
   function prepareApplicationAssist() {
-    if (!selected) return;
+    if (!selected || isApplicationAssistLaunching) return;
     if (!selectedJobResumeVersion) {
       setActiveTab("定制简历");
-      setToast("先生成并保存这份岗位版简历，再准备申请页填写。");
+      setToast(t("先生成并保存这份岗位版简历，再核对本地字段包。"));
       return;
     }
     setActiveResumeVersionId(selectedJobResumeVersion.id);
+    setApplicationAssistAuthorization({ contact: false, education: false, experience: false });
+    setIsApplicationAssistConfirmed(false);
     setIsApplicationAssistOpen(true);
   }
 
+  function closeApplicationAssist() {
+    if (isApplicationAssistLaunching) return;
+    setIsApplicationAssistOpen(false);
+  }
+
+  async function copyApplicationFields(fields) {
+    const copyText = fields.map((field) => `${field.label}:\n${field.value}`).join("\n\n");
+    if (!copyText || !navigator.clipboard?.writeText) {
+      setToast(t("无法复制字段。请检查浏览器剪贴板权限后重试。"));
+      return false;
+    }
+    try {
+      await navigator.clipboard.writeText(copyText);
+      setToast(t("已复制本地字段到系统剪贴板；未发送到网络。"));
+      return true;
+    } catch {
+      setToast(t("无法复制字段。请检查浏览器剪贴板权限后重试。"));
+      return false;
+    }
+  }
+
   async function launchApplicationAssist() {
-    if (!selected) return;
+    if (!selected || isApplicationAssistLaunching) return;
     if (selected.verificationStatus === "unavailable") {
       setToast("官网已确认该岗位失效，已保留你的求职记录。");
       return;
     }
-    if (!contactProfileReady || !applicationConsent.contact) {
-      setToast("先补齐姓名和邮箱，并明确允许使用联系方式。");
+    if (!canLaunchCurrentApplicationAssist) {
+      setToast(applicationContactValidation.reason === "invalid-email"
+        ? t("请填写格式正确的邮箱；不会猜测或改写邮箱。")
+        : t("先补齐姓名和邮箱，并明确允许使用联系方式。"));
       return;
     }
     const applicationUrl = selected.applyUrl || (selected.source === "手动 JD" ? selected.url : "");
     if (!isSpecificApplicationUrl(applicationUrl)) {
-      setToast("当前岗位没有具体申请链接。补充职位链接后再开始填写辅助。");
+      setToast(t("当前岗位没有具体申请链接。补充具体职位链接后再核对并打开字段包。"));
       return;
     }
-    setApplicationAssists((current) => ({
-      ...current,
-      [selected.id]: {
-        preparedAt: "刚刚准备",
-        resumeVersionId: selectedJobResumeVersion?.id ?? null,
-        contact: applicationConsent.contact,
-        education: applicationConsent.education,
-        experience: applicationConsent.experience,
-      },
-    }));
-    setIsApplicationAssistOpen(false);
-    if (await openJobSource(selected)) {
-      setToast("已打开职位申请页。后续只可使用你授权的字段；身份、授权、声明和最终提交必须由本人确认。");
+    const job = selected;
+    const resumeVersion = selectedJobResumeVersion;
+    const allowedGroups = Object.entries(applicationAssistAuthorization)
+      .filter(([, allowed]) => allowed)
+      .map(([group]) => group);
+    const audit = createApplicationAssistAudit({
+      job,
+      resumeVersionId: resumeVersion?.id ?? null,
+      allowedGroups,
+      packet: applicationFieldPacket,
+      candidateProfile,
+      resumeText: resumeVersion?.content ?? "",
+    });
+    setIsApplicationAssistLaunching(true);
+    try {
+      if (await openJobSource(job)) {
+        setApplicationAssists((current) => ({ ...current, [job.id]: audit }));
+        setIsApplicationAssistOpen(false);
+        setToast(t("已打开职位申请页。字段包仅供逐项复制，不会自动填表；最终提交必须由本人完成。"));
+      }
+    } finally {
+      setIsApplicationAssistLaunching(false);
     }
   }
 
@@ -1959,7 +2045,7 @@ export function App() {
           <div className="review-mobile-actions" aria-label={t("申请包操作")}>
             <button className="button quiet" onClick={prepareApplicationAssist}>
               <PaperPlaneTilt size={17} />
-              {t("打开申请页并准备资料")}
+              {t("核对字段后打开申请页")}
             </button>
             <button className="button quiet" onClick={exportResumeDraft}>
               <FileText size={17} />
@@ -2818,10 +2904,10 @@ export function App() {
           </div>
 
           <div className="application-assist-status">
-            <span>{t("申请页填写辅助")}</span>
-            <strong>{t(selectedApplicationAssist.preparedAt ? "已准备，等待用户打开申请页" : "尚未准备")}</strong>
-            <p>{selectedJobResumeVersion?.name ?? t("需要先保存岗位版简历")}</p>
-            <button onClick={prepareApplicationAssist}>{t("管理授权与填写资料")}</button>
+            <span>{t("申请字段包")}</span>
+            <strong>{t(selectedApplicationAssist.preparedAt ? "上次已打开申请页并记录字段包" : "尚未为此岗位打开字段包")}</strong>
+            <p>{selectedJobResumeVersion?.name ?? t("需要先保存岗位版简历")}{selectedApplicationAssist.preparedAt && applicationAssistSourceChanged ? ` · ${t("字段来源已变化")}` : ""}</p>
+            <button onClick={prepareApplicationAssist}>{t("核对本地字段包")}</button>
           </div>
 
           <label className="notes-box">
@@ -2836,7 +2922,7 @@ export function App() {
             <h3>{t("下一步")}</h3>
             <button className="button primary wide" onClick={prepareApplicationAssist}>
               <PaperPlaneTilt size={18} />
-              {t("打开申请页并准备资料")}
+              {t("核对字段后打开申请页")}
             </button>
             <button className="button quiet wide" disabled={isAgentThinking || Boolean(pendingResumeRewrite)} onClick={() => {
               createResumePolishDraft(selected, selected.role);
@@ -2860,7 +2946,7 @@ export function App() {
 
           <div className="approval-note">
             <PaperPlaneTilt size={18} />
-            <p>{t("批准只代表可以填表。最终提交仍需要本人对公司、岗位和申请内容逐项确认。")}</p>
+            <p>{t("授权只启用本地字段复制和打开具体申请页；不会自动填表或提交，最终提交由本人完成。")}</p>
           </div>
         </aside>
         ) : null}
@@ -2915,15 +3001,21 @@ export function App() {
           t={t}
           uiLanguage={uiLanguage}
           selected={selected}
-          activeResumeVersionId={selectedJobResumeVersion?.id ?? ""}
-          resumeVersions={selectedJobResumeVersion ? [selectedJobResumeVersion] : []}
-          onResumeVersionChange={setActiveResumeVersionId}
+          resumeVersion={selectedJobResumeVersion}
           candidateProfile={candidateProfile}
           onProfileChange={updateCandidateProfile}
-          applicationConsent={applicationConsent}
-          onConsentToggle={toggleApplicationConsent}
-          canLaunch={contactProfileReady && applicationConsent.contact}
-          onClose={() => setIsApplicationAssistOpen(false)}
+          authorization={applicationAssistAuthorization}
+          onAuthorizationToggle={toggleApplicationAssistAuthorization}
+          isConfirmed={isApplicationAssistConfirmed}
+          onConfirmationChange={setIsApplicationAssistConfirmed}
+          packet={applicationFieldPacket}
+          canLaunch={canLaunchCurrentApplicationAssist}
+          contactValidation={applicationContactValidation}
+          previousAudit={selectedApplicationAssist}
+          sourceChanged={applicationAssistSourceChanged}
+          onCopyFields={copyApplicationFields}
+          isLaunching={isApplicationAssistLaunching}
+          onClose={closeApplicationAssist}
           onLaunch={launchApplicationAssist}
         />
       )}

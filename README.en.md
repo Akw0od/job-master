@@ -14,7 +14,7 @@ Job Master combines an installable agent skill with a local visual workspace.
 - **Skill:** reads a job description, selects evidence from a candidate-controlled fact base, and creates tailored application materials and structured autofill data.
 - **Web workspace:** manages an immutable Master Resume, reusable direction resumes, disposable job-specific variants, job discovery, and application tracking.
 
-It is not an auto-apply bot. Browser assistance currently prepares authorized field data and opens a specific application page; it does not fill or submit the form. Final submission and sensitive questions always require the candidate's explicit review.
+It is not an auto-apply bot. Browser assistance reviews a per-role, per-resume local field packet and opens a specific application page; it does not fill or submit the form. Final submission and sensitive questions always require the candidate's explicit review.
 
 ## Web Workspace
 
@@ -32,7 +32,8 @@ It is not an auto-apply bot. Browser assistance currently prepares authorized fi
 - Use calibrated match confidence without an artificial minimum score.
 - Add a role to Applications only after the user saves it, starts tailoring, or opens the application page.
 - Track candidate-facing states from Saved through Applied, Interview, Offer, Rejected, and Archived.
-- Open the specific job application URL, prepare authorized data, and retain a final human approval gate.
+- Before each opening of a specific job application URL, re-review the local field packet for that exact role and resume version. Only individually authorized contact details, explicit education sections, and explicit experience or project sections can be copied to the system clipboard.
+- Never auto-fill or submit. The packet excludes work authorization, visa or sponsorship, salary, EEOC or identity, confidentiality statements, and submission actions; after a successful opening, browser-local audit data retain only authorization metadata and a non-plaintext source fingerprint.
 
 The website is currently a **local-first prototype**. Browser-local drafts use a versioned storage schema but are not a hosted database. Bundled roles are marked as needing re-verification; only manually refreshed results that pass direct-link checks are shown as verified. This is not a continuously running job aggregation service.
 

@@ -6,7 +6,7 @@ import {
   reserveApplicationWindow,
 } from "../src/services/applicationWindow.js";
 
-test("stale application links reserve a blank user-gesture tab and clear opener before navigation", () => {
+test("application links reserve a blank user-gesture tab and clear opener before navigation", () => {
   const calls = [];
   const reserved = {
     opener: { unsafe: true },
@@ -26,6 +26,24 @@ test("stale application links reserve a blank user-gesture tab and clear opener 
   assert.equal(calls[1], "https://example.com/jobs/123");
   closeReservedApplicationWindow(reserved);
   assert.equal(reserved.closed, true);
+});
+
+test("fresh verified links use the same reserved-tab navigation without relying on window.open's return from the destination", () => {
+  const calls = [];
+  const reserved = {
+    opener: { unsafe: true },
+    closed: false,
+    location: { replace: (url) => { calls.push(url); return undefined; } },
+  };
+  const opened = reserveApplicationWindow((...args) => {
+    calls.push(args);
+    return reserved;
+  });
+
+  assert.equal(opened, reserved);
+  assert.deepEqual(calls, [["about:blank", "_blank"]]);
+  assert.equal(navigateReservedApplicationWindow(opened, "https://example.com/jobs/fresh"), true);
+  assert.deepEqual(calls, [["about:blank", "_blank"], "https://example.com/jobs/fresh"]);
 });
 
 test("blocked or closed reserved application tabs do not report successful navigation", () => {
