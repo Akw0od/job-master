@@ -21,6 +21,8 @@ export function LocalDataModal({
   onClearConfirmationChange,
   onClear,
   clearError,
+  resumeRewriteConsent,
+  onRevokeResumeRewriteConsent,
   onClose,
 }) {
   const dialogRef = useDialogFocus({ onClose, initialFocusSelector: "#backup-password" });
@@ -65,6 +67,20 @@ export function LocalDataModal({
           <WarningCircle size={18} weight="duotone" />
           <p>{t("本地草稿可能包含简历文本、联系方式、岗位、申请追踪和设置。清理浏览器数据、使用无痕窗口或更换设备可能导致它丢失。")}</p>
         </div>
+
+        <section className="local-data-section" aria-labelledby="rewrite-consent-title">
+          <div>
+            <h3 id="rewrite-consent-title">{t("AI 改写数据授权")}</h3>
+            <p>{resumeRewriteConsent
+              ? t("此浏览器已记住 AI 改写授权；简历或 JD 发送前不再逐次询问。")
+              : t("每次 AI 改写都会在发送简历或 JD 前询问。")}</p>
+          </div>
+          {resumeRewriteConsent && (
+            <button className="button quiet" onClick={onRevokeResumeRewriteConsent}>
+              {t("撤销记住的授权，下次重新询问")}
+            </button>
+          )}
+        </section>
 
         <section className="local-data-section" aria-labelledby="backup-title">
           <div>

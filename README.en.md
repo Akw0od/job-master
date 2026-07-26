@@ -47,7 +47,7 @@ npm install
 npm run dev
 ```
 
-`npm run dev` starts both the Vite site and the local Codex agent on `127.0.0.1:4317`. Use `npm run dev:web` for the frontend only and `npm run check` for the full lint, test, and build check. Run `npm run audit:prod` for the production dependency audit.
+`npm run dev` starts both the Vite site and a localhost-only proxy on `127.0.0.1:4317`. For an AI rewrite, the proxy forwards the explicitly reviewed payload to the model configured by Codex CLI; it is not local inference. Use `npm run dev:web` for the frontend only and `npm run check` for the full lint, test, and build check. Run `npm run audit:prod` for the production dependency audit.
 
 ## Install The Skill
 
@@ -83,7 +83,8 @@ Outputs:
 2. The Master Resume is immutable; AI and manual edits create reviewable derived versions.
 3. No final application submission without explicit approval for that exact company and role.
 4. Work authorization, sponsorship, EEOC, compensation, and other sensitive fields must never be guessed.
-5. Local-first does not mean risk-free; review device permissions, browser storage, and model-provider privacy terms before using real personal data.
+5. Every AI rewrite shows the exact outbound data first: the selected full resume, an optional full job description, market, language, target role, and the user's instruction. The full resume may contain personal information such as a name, email address, or phone number, and that information is sent with the resume text. It does not additionally send local profile fields used for application assist, application tracking, other roles, or all browser storage. Official-site job search never sends a resume.
+6. Remembered AI-rewrite consent is browser-local and stores only a consent version and timestamp; it can be revoked from Local data. Processing location and retention are governed by the configured model provider, while local temporary files are deleted after the request.
 
 ## Repository Layout
 

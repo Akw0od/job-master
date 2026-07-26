@@ -1,4 +1,5 @@
 import { inferLegacyTracking } from "../domain/applications.js";
+import { normalizeResumeRewriteConsent } from "../services/resumeRewriteConsent.js";
 
 export const dashboardStorageKey = "job-master-dashboard-v3";
 export const previousDashboardStorageKey = "job-master-dashboard-v2";
@@ -34,6 +35,7 @@ export function migrateDashboard(rawDashboard) {
     resumePageSize: ["A4", "Letter"].includes(raw.resumePageSize)
       ? raw.resumePageSize
       : "A4",
+    resumeRewriteConsent: normalizeResumeRewriteConsent(raw.resumeRewriteConsent),
   };
 }
 

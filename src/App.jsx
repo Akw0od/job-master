@@ -31,6 +31,7 @@ import { ApplicationAssistModal } from "./components/modals/ApplicationAssistMod
 import { EditModal } from "./components/modals/EditModal";
 import { CustomDirectionModal, ImportJobModal } from "./components/modals/JobInputModals";
 import { LocalDataModal } from "./components/modals/LocalDataModal";
+import { ResumeRewriteConsentModal } from "./components/modals/ResumeRewriteConsentModal";
 import { ResumeExportModal } from "./components/modals/ResumeExportModal";
 import { jobPoolsByMarket } from "./data/jobCatalog";
 import {
@@ -73,6 +74,12 @@ import {
   decryptDashboardBackup,
   readEncryptedBackupFile,
 } from "./services/dashboardBackup";
+import {
+  createResumeRewritePayload,
+  decideResumeRewriteConsent,
+  normalizeResumeRewriteConsent,
+  summarizeResumeRewritePayload,
+} from "./services/resumeRewriteConsent";
 import { clearKnownDashboards, readDashboard, writeDashboard } from "./storage/dashboardStorage";
 import {
   applyResumeChange,
@@ -294,6 +301,8 @@ export function App() {
   const [isApplicationAssistOpen, setIsApplicationAssistOpen] = useState(false);
   const [isAgentThinking, setIsAgentThinking] = useState(false);
   const [agentSuggestion, setAgentSuggestion] = useState(() => savedDashboard.agentSuggestion ?? null);
+  const [resumeRewriteConsent, setResumeRewriteConsent] = useState(() => normalizeResumeRewriteConsent(savedDashboard.resumeRewriteConsent));
+  const [pendingResumeRewrite, setPendingResumeRewrite] = useState(null);
   const saveFailureNotifiedRef = useRef(false);
   const isDataReloadingRef = useRef(false);
 
@@ -477,13 +486,14 @@ export function App() {
       recommendationMeta,
       agentSuggestion,
       resumeChangeDecisions,
+      resumeRewriteConsent,
     }
   ), [
     activeResumeTab, activeResumeVersionId, agentSuggestion, applicationAssists,
     applicationConsent, applications, candidateProfile, customDirections,
     discoveryCycles, employmentType, liveJobsByDiscoveryKey, notesByJobId,
     outputLanguage, profileReady, recommendationMeta, resumeChangeDecisions,
-    resumeFile, resumePageSize, resumeVersions, reviewDrafts, reviewStatus,
+    resumeFile, resumePageSize, resumeRewriteConsent, resumeVersions, reviewDrafts, reviewStatus,
     seenJobIdsByMarket, selectedDirection, selectedId, step, targetMarket,
     targetRole, uiLanguage,
   ]);
@@ -1028,26 +1038,29 @@ export function App() {
     return () => mobileQuery.removeEventListener("change", collapseQueueForMobile);
   }, [isReviewReady]);
 
-  async function requestResumeRewrite(messageText, options = {}) {
-    const message = String(messageText).trim();
-    if (!message || isAgentThinking) return false;
-    const sourceVersion = options.sourceVersion ?? activeResumeVersion ?? masterResumeVersion;
-    const sourceText = options.resumeText ?? sourceVersion?.content ?? "";
-    if (!sourceText.trim() || isPlaceholderResume(sourceText)) {
-      setToast("先上传你的原版简历。没有 Master Resume 时不会生成替代内容。");
-      triggerResumePicker();
-      return false;
+  async function executeResumeRewrite(rewrite) {
+    if (!rewrite || isAgentThinking) return false;
+    const { payload, options, sourceVersion, sourceText, job, isJobRewrite } = rewrite;
+    setPendingResumeRewrite(null);
+    if (isJobRewrite) {
+      if (job?.id) {
+        setSelectedId(job.id);
+        setReviewStatus("准备中");
+        setApplications((current) => current.map((item) => (
+          item.id === job.id
+            ? { ...item, userTracked: true, status: "准备中", statusKey: "tailoring", updated: "正在根据 JD 定制" }
+            : item
+        )));
+      }
+      setStep("review");
+      setActiveTab("定制简历");
+    } else {
+      setStep("evidence");
     }
+    setToast(t("正在请求 Codex 模型生成可审核建议…"));
     setIsAgentThinking(true);
     try {
-      const result = await requestResumeRewriteFromAgent({
-        message,
-        resumeText: sourceText,
-        market: targetMarket,
-        language: outputLanguage,
-        targetRole: options.targetRole ?? targetRole,
-        jdText: options.jdText ?? "",
-      });
+      const result = await requestResumeRewriteFromAgent(payload);
       setAgentSuggestion({
         ...result,
         id: createLocalId("suggestion"),
@@ -1055,8 +1068,8 @@ export function App() {
         reviewedResume: sourceText,
         sourceVersionId: sourceVersion?.id ?? "master-resume",
         sourceDocumentMeta: sourceVersion?.documentMeta ?? masterResumeVersion?.documentMeta ?? {},
-        suggestedName: options.suggestedName ?? `${targetRole} · Codex 建议版`,
-        suggestedTarget: options.suggestedTarget ?? targetRole,
+        suggestedName: options.suggestedName ?? `${payload.targetRole} · Codex 建议版`,
+        suggestedTarget: options.suggestedTarget ?? payload.targetRole,
         layer: options.layer ?? "direction",
         jobId: options.jobId,
         jdText: options.jdText ?? "",
@@ -1064,7 +1077,7 @@ export function App() {
         jdSource: options.jdSource ?? "",
       });
       setResumePreviewMode("compare");
-      setToast("本地 Agent 已生成完整简历建议，确认后可保存为新版本。");
+      setToast(t("本机代理 · Codex 模型处理已生成完整简历建议，确认后可保存为新版本。"));
       return true;
     } catch (error) {
       setToast(`${options.layer === "job" ? "岗位版" : "方向版"}生成失败：${error.message}`);
@@ -1072,6 +1085,24 @@ export function App() {
     } finally {
       setIsAgentThinking(false);
     }
+  }
+
+  function cancelPendingResumeRewrite() {
+    if (!pendingResumeRewrite) return;
+    setPendingResumeRewrite(null);
+    setToast(t("已取消 AI 改写授权，未发送简历或 JD。"));
+  }
+
+  async function approvePendingResumeRewrite(choice) {
+    const rewrite = pendingResumeRewrite;
+    if (!rewrite || isAgentThinking) return false;
+    const decision = decideResumeRewriteConsent(choice);
+    if (decision.rememberedConsent) setResumeRewriteConsent(decision.rememberedConsent);
+    if (!decision.execute) {
+      cancelPendingResumeRewrite();
+      return false;
+    }
+    return executeResumeRewrite(rewrite);
   }
 
   function applyLocalAgentSuggestion() {
@@ -1116,7 +1147,7 @@ export function App() {
           rejected: reviewSummary.rejected,
           total: suggestionChanges.length,
         },
-        updated: "刚刚由本地 Agent 生成",
+        updated: "刚刚由本机代理 · Codex 模型处理生成",
         status: agentSuggestion.requiresConfirmation?.length ? "待事实确认" : "已审核保存",
       },
     ]);
@@ -1142,7 +1173,8 @@ export function App() {
       : typeof jobOrTitle === "string"
         ? jobOrTitle
         : undefined;
-    if (!masterResumeVersion?.content) {
+    if (isAgentThinking || pendingResumeRewrite || !masterResumeVersion?.content) {
+      if (isAgentThinking || pendingResumeRewrite) return false;
       setToast("先上传你的原版简历。岗位定制不会再用演示经历代替。");
       triggerResumePicker();
       return false;
@@ -1156,39 +1188,38 @@ export function App() {
     const sourceVersion = normalizedJobTitle
       ? activeResumeVersion ?? masterResumeVersion
       : masterResumeVersion;
-    if (normalizedJobTitle) {
-      if (job?.id) {
-        setSelectedId(job.id);
-        setReviewStatus("准备中");
-        setApplications((current) => current.map((item) => (
-          item.id === job.id
-            ? { ...item, userTracked: true, status: "准备中", statusKey: "tailoring", updated: "正在根据 JD 定制" }
-            : item
-        )));
-      }
-      setStep("review");
-      setActiveTab("定制简历");
-    } else {
-      setStep("evidence");
-    }
-    setToast(`正在从你的 Master Resume 生成 ${target} 定制建议…`);
-    return requestResumeRewrite(
-      normalizedJobTitle
+    const message = normalizedJobTitle
         ? `请严格根据随请求提供的 ${normalizedJobTitle} 职位描述微调这份简历。必须保留原版的章节结构、模板、姓名、联系方式、教育、经历、项目和日期；只允许改写 bullet、调整章节内部顺序，或在原版已有经历和项目之间进行取舍，不添加任何原文没有的公司、项目、技能或指标。`
-        : `请按 ${targetMarket} 市场、${outputLanguage} 和 ${roleOverride} 方向改写这份简历。必须保持原版章节结构和模板不变；只允许改写现有内容、调整章节内部 bullet 顺序，或从原版已有经历和项目中进行取舍。不得添加原文没有的事实、指标、公司、项目或技能。`,
-      {
-        sourceVersion,
-        resumeText: sourceVersion.content,
+        : `请按 ${targetMarket} 市场、${outputLanguage} 和 ${roleOverride} 方向改写这份简历。必须保持原版章节结构和模板不变；只允许改写现有内容、调整章节内部 bullet 顺序，或从原版已有经历和项目中进行取舍。不得添加原文没有的事实、指标、公司、项目或技能。`;
+    const sourceText = sourceVersion.content;
+    const payload = createResumeRewritePayload({
+      message,
+      resumeText: sourceText,
+      market: targetMarket,
+      language: outputLanguage,
+      targetRole: job?.role ?? roleOverride,
+      jdText: job?.jdText ?? "",
+    });
+    const rewrite = {
+      payload,
+      sourceVersion,
+      sourceText,
+      job,
+      isJobRewrite: Boolean(normalizedJobTitle),
+      options: {
         suggestedName: normalizedJobTitle ?? roleOverride,
         suggestedTarget: target,
         layer: normalizedJobTitle ? "job" : "direction",
         jobId: normalizedJobTitle ? job?.id ?? selected?.id : undefined,
-        targetRole: job?.role ?? roleOverride,
-        jdText: job?.jdText ?? "",
+        jdText: payload.jdText,
         jdHash: job?.jdHash ?? "",
         jdSource: job?.jdSource ?? "",
       },
-    );
+      summary: summarizeResumeRewritePayload(payload, sourceVersion?.name ?? "Master Resume"),
+    };
+    if (resumeRewriteConsent) return executeResumeRewrite(rewrite);
+    setPendingResumeRewrite(rewrite);
+    return false;
   }
 
   function selectDirectionResume(role) {
@@ -1742,7 +1773,7 @@ export function App() {
     setStep("review");
     setIsQueueCollapsed(true);
     setIsImportOpen(false);
-    setToast("完整 JD 已保存为岗位快照，正在生成可审核的岗位版建议…");
+    setToast("完整 JD 已保存为岗位快照；确认发送范围后才会生成可审核的岗位版建议。");
     await createResumePolishDraft(importedJob, importedJob.role);
   }
 
@@ -1901,10 +1932,8 @@ export function App() {
                   <ArrowSquareOut size={17} />
                   {t("打开申请页")}
                 </button>
-                <button className="button primary" onClick={() => {
+                <button className="button primary" disabled={isAgentThinking || Boolean(pendingResumeRewrite)} onClick={() => {
                   createResumePolishDraft(selected, selected.role);
-                  setActiveTab("定制简历");
-                  requestAnimationFrame(() => reviewCanvasRef.current?.scrollTo({ top: reviewSectionRefs.current.resume?.offsetTop ?? 0, behavior: "smooth" }));
                 }}>
                   <Sparkle size={17} weight="fill" />
                   {t("根据 JD 定制")}
@@ -2094,7 +2123,7 @@ export function App() {
                         ))}
                       </select>
                     </label>
-                    <button className="button primary" disabled={isAgentThinking || !masterResumeVersion} onClick={() => createResumePolishDraft(selected, selected.role)}>
+                    <button className="button primary" disabled={isAgentThinking || Boolean(pendingResumeRewrite) || !masterResumeVersion} onClick={() => createResumePolishDraft(selected, selected.role)}>
                       <Sparkle size={17} weight="fill" />
                       {t(isAgentThinking ? "正在生成…" : selectedJobResumeVersion ? "重新生成建议" : "生成岗位版")}
                     </button>
@@ -2306,7 +2335,7 @@ export function App() {
                     </button>
                     <button
                       className="button primary"
-                      disabled={isAgentThinking || !masterResumeVersion}
+                      disabled={isAgentThinking || Boolean(pendingResumeRewrite) || !masterResumeVersion}
                       onClick={() => createResumePolishDraft(undefined, activeResumeVersion?.target === "上传原文" ? targetRole : activeResumeVersion?.target ?? targetRole)}
                     >
                       <Sparkle size={18} weight="fill" />
@@ -2809,9 +2838,8 @@ export function App() {
               <PaperPlaneTilt size={18} />
               {t("打开申请页并准备资料")}
             </button>
-            <button className="button quiet wide" onClick={() => {
+            <button className="button quiet wide" disabled={isAgentThinking || Boolean(pendingResumeRewrite)} onClick={() => {
               createResumePolishDraft(selected, selected.role);
-              goToReviewTab("定制简历");
             }}>
               <Sparkle size={18} weight="fill" />
               {t("根据 JD 定制简历")}
@@ -2863,7 +2891,22 @@ export function App() {
           onClearConfirmationChange={setClearConfirmation}
           onClear={clearLocalData}
           clearError={clearError}
+          resumeRewriteConsent={resumeRewriteConsent}
+          onRevokeResumeRewriteConsent={() => {
+            setResumeRewriteConsent(null);
+            setToast(t("已撤销记住的 AI 改写授权；下次发送前会重新询问。"));
+          }}
           onClose={closeLocalDataModal}
+        />
+      )}
+
+      {pendingResumeRewrite && (
+        <ResumeRewriteConsentModal
+          t={t}
+          summary={pendingResumeRewrite.summary}
+          onCancel={cancelPendingResumeRewrite}
+          onContinueOnce={() => approvePendingResumeRewrite("once")}
+          onRemember={() => approvePendingResumeRewrite("remember")}
         />
       )}
 
