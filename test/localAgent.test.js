@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Readable } from "node:stream";
 import {
@@ -12,6 +13,7 @@ import {
   buildJobSearchPrompt,
   isSpecificJobUrl,
   normalizeJobSearchPayload,
+  normalizeJobSearchResult,
   normalizeJobUrlVerificationPayload,
   verifyJobUrls,
   verifyJobSearchResult,
@@ -79,6 +81,96 @@ test("job discovery prompt excludes candidate resume data", () => {
   assert.match(prompt, /official-site job discovery/);
   assert.doesNotMatch(prompt, /candidate resume/i);
   assert.match(prompt, /Do not use or request candidate personal data/);
+});
+
+test("verified live jobs receive a deterministic SHA-256 source receipt", () => {
+  const jdText = "Build reliable systems for a candidate-facing dashboard.";
+  const searchedAt = "2026-07-27T12:00:00.000Z";
+  const job = {
+    company: "OpenAI",
+    role: "Software Engineer",
+    location: "San Francisco, CA",
+    employmentType: "全职",
+    applyUrl: "https://jobs.ashbyhq.com/openai/eaf9207e-84c9-4fa2-bd57-6877b7eb7f79/application",
+    source: "OpenAI careers",
+    jdText,
+    requirements: ["JavaScript"],
+  };
+  const normalized = normalizeJobSearchResult(
+    { jobs: [job] },
+    { employmentType: "全职" },
+    [job],
+    searchedAt,
+  );
+  const receipt = normalized.jobs[0].sourceReceipt;
+  const expectedHash = createHash("sha256").update(jdText, "utf8").digest("hex");
+
+  assert.equal(normalized.jobs[0].jdHash, expectedHash);
+  assert.equal(normalized.jobs[0].jdHashAlgorithm, "sha-256");
+  assert.deepEqual(receipt, {
+    schemaVersion: 1,
+    origin: "live-official-search",
+    provider: "ashby",
+    providerJobId: "eaf9207e-84c9-4fa2-bd57-6877b7eb7f79",
+    postingUrl: "https://jobs.ashbyhq.com/openai/eaf9207e-84c9-4fa2-bd57-6877b7eb7f79",
+    applyUrl: job.applyUrl,
+    fetchedAt: searchedAt,
+    verificationState: "open",
+    verifiedAt: searchedAt,
+    verificationReason: "live-search-verified",
+    jdHash: expectedHash,
+    jdHashAlgorithm: "sha-256",
+  });
+});
+
+test("job search returns every deterministic recheck outcome with timestamps and reason codes", async () => {
+  const urls = [
+    "https://example.com/jobs/open-123",
+    "https://example.com/jobs/unknown-123",
+    "https://example.com/jobs/closed-123",
+  ];
+  const result = await verifyJobSearchResult({ jobs: [] }, {
+    market: "美国",
+    employmentType: "实习",
+    targetRole: "Software Engineer",
+    existingApplyUrls: [...urls, urls[0]],
+    limit: 8,
+  }, {
+    fetchImpl: async (url) => {
+      if (url.includes("unknown")) throw new Error("offline");
+      if (url.includes("closed")) return { ok: false, status: 404, headers: { get: () => null }, body: { cancel: async () => {} } };
+      return { ok: true, status: 200, headers: { get: () => null }, body: { cancel: async () => {} } };
+    },
+  });
+  assert.deepEqual(result.verificationChecks.map(({ url, state, reason }) => ({ url, state, reason })), [
+    { url: urls[0], state: "open", reason: "url-open" },
+    { url: urls[1], state: "unknown", reason: "network-or-inconclusive" },
+    { url: urls[2], state: "closed", reason: "http-404-or-410" },
+  ]);
+  assert.equal(result.verificationChecks.every(({ checkedAt }) => Number.isFinite(Date.parse(checkedAt))), true);
+  assert.deepEqual(result.rejectedApplyUrls, [urls[2]]);
+});
+
+test("a newly accepted live job records its actual URL verification reason", async () => {
+  const job = {
+    company: "Example",
+    role: "Engineer Intern",
+    location: "Remote",
+    employmentType: "实习",
+    applyUrl: "https://example.com/jobs/engineer-intern-123",
+    jdText: "Build and test reliable software systems with a product team.",
+  };
+  const result = await verifyJobSearchResult({ jobs: [job] }, {
+    market: "美国",
+    employmentType: "实习",
+    targetRole: "Software Engineer",
+    limit: 8,
+  }, {
+    fetchImpl: async () => ({ ok: true, status: 200, headers: { get: () => null }, body: { cancel: async () => {} } }),
+  });
+  assert.equal(result.jobs.length, 1);
+  assert.equal(result.jobs[0].sourceReceipt.verificationReason, "url-open");
+  assert.equal(result.verificationChecks[0].reason, "url-open");
 });
 
 test("job search schema requires the returned employment type", () => {

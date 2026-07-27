@@ -48,3 +48,16 @@ test("application tabs use deterministic roving keyboard navigation", () => {
   assert.equal(getNextTabKey(applicationTabs, "岗位匹配", "Enter"), null);
   assert.equal(getNextTabKey([], "岗位匹配", "ArrowRight"), null);
 });
+
+test("source receipt uses a native collapsed disclosure with localized labels", () => {
+  assert.match(appSource, /<details className="source-receipt">/);
+  assert.match(appSource, /<summary>[\s\S]*?\{t\("来源凭据"\)\}/);
+  assert.doesNotMatch(appSource, /<details className="source-receipt"\s+open/);
+  assert.equal(translateUiText("来源凭据", "en"), "Source receipt");
+  assert.match(styles, /\.source-receipt-grid\s*\{[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(styles, /@media \(max-width: 620px\)[\s\S]*?\.source-receipt-grid[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(styles, /\.source-receipt summary:focus-visible/);
+  assert.match(appSource, /function formatReceiptTimestamp[\s\S]*?Number\.isFinite\(timestamp\)[\s\S]*?: t\("未提供"\)/);
+  assert.match(appSource, /function formatReceiptHash[\s\S]*?if \(!receipt\?\.jdHash\) return t\("未提供"\)/);
+  assert.match(appSource, /applyLiveUrlChecks\(liveSearchResult\.verificationChecks\)/);
+});

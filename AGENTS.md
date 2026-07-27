@@ -41,3 +41,4 @@ When implementing from a selected generated mock, treat that image as the source
 - Resume PDF export must use selectable text, support A4 and Letter, and preserve system CJK fonts. Do not regress to screenshot-only PDFs; the browser print/save dialog remains the final user-controlled file action.
 - Keep Stripe work outside the current core-fix scope. If the deferred billing prototype is restored later, use server-created Checkout Sessions and never claim Alipay or WeChat Pay support until Stripe Dashboard approval is confirmed for this Jobmaster account.
 - Support a browser-local Chinese/English interface switch. Locale changes product chrome only; never translate or mutate uploaded resume text, pasted JDs, custom directions, or other user-owned content.
+- Discovered and imported jobs must carry a visible source receipt. Unknown or missing provider, identifier, timestamp, verification, and JD-hash values stay explicit and are never inferred.

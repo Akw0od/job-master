@@ -1,3 +1,5 @@
+import { updateSourceReceiptVerification, withNormalizedSourceReceipt } from "./sourceReceipt.js";
+
 const jobKeywordProfiles = {
   ai_agent_engineer: ["ai", "agent", "llm", "rag", "evaluation", "python", "typescript", "tool use", "智能体", "评测", "模型"],
   sde: ["software", "engineer", "python", "typescript", "java", "c++", "api", "backend", "frontend", "full-stack", "软件", "工程", "全栈"],
@@ -168,7 +170,7 @@ export function rankJobsForResume(jobs, resumeText, targetRole, customDirections
 
 export function normalizeSearchedJobs(searchResult, market, employmentType) {
   const jobs = Array.isArray(searchResult?.jobs) ? searchResult.jobs : [];
-  return jobs.map((job, index) => ({
+  return jobs.map((job, index) => withNormalizedSourceReceipt({
     ...job,
     id: job.id || `live-${market}-${employmentType}-${index}-${String(job.company).toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
     status: "待处理",
@@ -236,6 +238,7 @@ export function applyLiveUrlVerificationResults(jobs, checks) {
     if (check.state === "closed") {
       return {
         ...job,
+        sourceReceipt: updateSourceReceiptVerification(job, check),
         verificationStatus: "unavailable",
         isNew: false,
         updated: "官网确认岗位已失效",
@@ -244,6 +247,7 @@ export function applyLiveUrlVerificationResults(jobs, checks) {
     if (check.state === "open") {
       return {
         ...job,
+        sourceReceipt: updateSourceReceiptVerification(job, check),
         verificationStatus: "verified",
         verifiedAt: check.checkedAt || job.verifiedAt,
         updated: "链接已重新核验",
@@ -251,6 +255,7 @@ export function applyLiveUrlVerificationResults(jobs, checks) {
     }
     return {
       ...job,
+      sourceReceipt: updateSourceReceiptVerification(job, check),
       verificationStatus: "unknown",
       updated: "官网链接暂时无法确认",
     };
@@ -298,7 +303,7 @@ export function mergeJobPools(staticPools, liveJobsByDiscoveryKey = {}) {
       .filter(([key]) => key.startsWith(`${market}:`))
       .flatMap(([, jobs]) => Array.isArray(jobs) ? jobs : []);
     const deduped = new Map();
-    [...liveJobs, ...(staticPools[market] ?? [])].forEach((job) => {
+    [...liveJobs, ...(staticPools[market] ?? [])].map(withNormalizedSourceReceipt).forEach((job) => {
       const key = job.applyUrl || job.url || `${job.company}|${job.role}|${job.location}`;
       if (!deduped.has(key)) deduped.set(key, job);
     });

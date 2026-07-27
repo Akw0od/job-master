@@ -11,7 +11,26 @@ import {
 
 const password = "safe backup password";
 const dashboard = {
-  applications: [],
+  applications: [{
+    id: "imported-receipt",
+    jdSource: "user-pasted",
+    jdHash: "abc123",
+    jdHashAlgorithm: "fnv-1a-32",
+    sourceReceipt: {
+      schemaVersion: 1,
+      origin: "user-pasted",
+      provider: "official-company-site",
+      providerJobId: "",
+      postingUrl: "https://example.com/jobs/123",
+      applyUrl: "https://example.com/jobs/123",
+      fetchedAt: "",
+      verificationState: "needs-review",
+      verifiedAt: "",
+      verificationReason: "manual-jd-needs-review",
+      jdHash: "abc123",
+      jdHashAlgorithm: "fnv-1a-32",
+    },
+  }],
   resumeVersions: [{ id: "master-resume", content: "Ada Lovelace\nada@example.com\nSensitive resume facts" }],
   candidateProfile: { name: "Ada Lovelace", email: "ada@example.com" },
 };
@@ -27,6 +46,7 @@ test("encrypted local dashboard backup round-trips without plaintext resume or p
   const restored = await decryptDashboardBackup(backup, password);
   assert.equal(restored.resumeVersions[0].content, dashboard.resumeVersions[0].content);
   assert.equal(restored.candidateProfile.email, "ada@example.com");
+  assert.deepEqual(restored.applications[0].sourceReceipt, dashboard.applications[0].sourceReceipt);
 });
 
 test("backup rejects wrong passwords, tampering, unsupported envelopes, and oversized files", async () => {

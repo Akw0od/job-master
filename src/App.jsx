@@ -91,6 +91,7 @@ import {
   hasApplicationAssistSourceChanged,
   validateApplicationContact,
 } from "./services/applicationFieldPacket";
+import { deriveOfficialJobProvider, derivePostingUrl, normalizeReceiptUrl } from "./domain/sourceReceipt";
 import { getNextTabKey } from "./services/tabNavigation";
 import { clearKnownDashboards, readDashboard, writeDashboard } from "./storage/dashboardStorage";
 import {
@@ -112,6 +113,57 @@ function verificationStatusCopy(job) {
   if (job?.verificationStatus === "verified" && isLiveOfficialVerificationStale(job)) return "核验已过期";
   if (job?.verificationStatus === "verified") return "链接已核验";
   return "待重新核验";
+}
+
+const receiptValueLabels = {
+  "live-official-search": "实时官网搜索",
+  "built-in-catalog": "内置岗位目录",
+  "user-pasted": "用户粘贴",
+  "legacy-cache": "旧本地缓存",
+  "official-company-site": "公司官网",
+  open: "已开放",
+  closed: "已关闭",
+  unknown: "暂时未知",
+  "needs-review": "待核验",
+  manual: "用户补充",
+  "live-search-verified": "实时搜索时已核验",
+  "url-check-open": "具体链接核验可打开",
+  "url-check-closed": "具体链接核验已关闭",
+  "url-check-unknown": "具体链接暂时无法确认",
+  "url-open": "具体链接可打开",
+  "http-404-or-410": "官网返回 404 或 410",
+  "closed-page-signal": "页面明确显示岗位已关闭",
+  "ashby-published": "Ashby 职位仍在发布",
+  "ashby-not-published": "Ashby 职位已下线",
+  "network-or-inconclusive": "网络或响应不足，暂无法确认",
+  "bounded-response": "响应超过安全读取上限",
+  "redirect-inconclusive": "重定向结果无法确认",
+  "invalid-or-unsafe-url": "链接格式或安全性不合格",
+  "built-in-catalog-needs-review": "内置目录，尚未实时核验",
+  "manual-jd-needs-review": "用户粘贴 JD，链接待核验",
+  "manual-jd-no-application-url": "用户未提供具体申请链接",
+  "legacy-cache-needs-review": "旧缓存，来源详情待重新核验",
+  none: "未提供",
+  "legacy-unknown": "旧记录未标明算法",
+};
+
+function sourceReceiptValue(value, t) {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return t("未提供");
+  const label = receiptValueLabels[normalized];
+  return label ? `${t(label)} (${normalized})` : normalized;
+}
+
+function formatReceiptTimestamp(value, uiLanguage, t) {
+  const timestamp = Date.parse(String(value ?? ""));
+  return Number.isFinite(timestamp)
+    ? new Date(timestamp).toLocaleString(uiLanguage === "en" ? "en-US" : "zh-CN")
+    : t("未提供");
+}
+
+function formatReceiptHash(receipt, t) {
+  if (!receipt?.jdHash) return t("未提供");
+  return `${receipt.jdHash} · ${sourceReceiptValue(receipt.jdHashAlgorithm, t)}`;
 }
 
 function getSuggestionScope(suggestion) {
@@ -759,7 +811,11 @@ export function App() {
             [discoveryKey]: normalizedLiveJobs,
           };
           setLiveJobsByDiscoveryKey(nextLiveJobs);
-          setApplications((current) => markRejectedLiveJobs(current, liveSearchResult.rejectedApplyUrls));
+          if (Array.isArray(liveSearchResult.verificationChecks) && liveSearchResult.verificationChecks.length) {
+            applyLiveUrlChecks(liveSearchResult.verificationChecks);
+          } else {
+            setApplications((current) => markRejectedLiveJobs(current, liveSearchResult.rejectedApplyUrls));
+          }
           poolsForRun = mergeJobPools(jobPoolsByMarket, nextLiveJobs);
         } catch (error) {
           liveSearchError = error.message;
@@ -1871,6 +1927,13 @@ export function App() {
           summary: importedBaseJob.summary,
           applyUrl: applicationUrl || existingJob.applyUrl,
           url: applicationUrl || existingJob.url,
+          jdHashAlgorithm: importedBaseJob.jdHashAlgorithm,
+          sourceReceipt: {
+            ...importedBaseJob.sourceReceipt,
+            ...deriveOfficialJobProvider(applicationUrl || existingJob.applyUrl || existingJob.url),
+            postingUrl: derivePostingUrl(applicationUrl || existingJob.url || ""),
+            applyUrl: normalizeReceiptUrl(applicationUrl || existingJob.applyUrl || ""),
+          },
         }
       : importedBaseJob;
     const analyzedJob = analyzeJobForResume(baseJob, masterResumeVersion?.content ?? "", targetRole, customDirections);
@@ -2130,6 +2193,24 @@ export function App() {
                   </dd>
                 </div>
               </dl>
+              <details className="source-receipt">
+                <summary>
+                  <span>{t("来源凭据")}</span>
+                  <small>{t("默认收起；展开查看来源和核验记录")}</small>
+                </summary>
+                <dl className="source-receipt-grid">
+                  <div><dt>{t("来源类型")}</dt><dd>{sourceReceiptValue(selected.sourceReceipt?.origin, t)}</dd></div>
+                  <div><dt>{t("提供方")}</dt><dd>{sourceReceiptValue(selected.sourceReceipt?.provider, t)}</dd></div>
+                  <div><dt>{t("提供方职位 ID")}</dt><dd>{sourceReceiptValue(selected.sourceReceipt?.providerJobId, t)}</dd></div>
+                  <div><dt>{t("抓取时间")}</dt><dd>{formatReceiptTimestamp(selected.sourceReceipt?.fetchedAt, uiLanguage, t)}</dd></div>
+                  <div><dt>{t("核验状态")}</dt><dd>{sourceReceiptValue(selected.sourceReceipt?.verificationState, t)}</dd></div>
+                  <div><dt>{t("核验原因")}</dt><dd>{sourceReceiptValue(selected.sourceReceipt?.verificationReason, t)}</dd></div>
+                  <div><dt>{t("核验时间")}</dt><dd>{formatReceiptTimestamp(selected.sourceReceipt?.verifiedAt, uiLanguage, t)}</dd></div>
+                  <div><dt>{t("JD 哈希")}</dt><dd>{formatReceiptHash(selected.sourceReceipt, t)}</dd></div>
+                  <div className="source-receipt-url"><dt>{t("岗位链接")}</dt><dd>{normalizeReceiptUrl(selected.sourceReceipt?.postingUrl) ? <a href={normalizeReceiptUrl(selected.sourceReceipt.postingUrl)} target="_blank" rel="noreferrer">{normalizeReceiptUrl(selected.sourceReceipt.postingUrl)}</a> : t("未提供")}</dd></div>
+                  <div className="source-receipt-url"><dt>{t("申请链接")}</dt><dd>{normalizeReceiptUrl(selected.sourceReceipt?.applyUrl) ? <a href={normalizeReceiptUrl(selected.sourceReceipt.applyUrl)} target="_blank" rel="noreferrer">{normalizeReceiptUrl(selected.sourceReceipt.applyUrl)}</a> : t("未提供")}</dd></div>
+                </dl>
+              </details>
               {selected.jdText && (
                 <details className="jd-snapshot">
                   <summary>

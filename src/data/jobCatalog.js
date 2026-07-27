@@ -227,6 +227,7 @@ const sampleJobs = [
 
 const usJobPool = sampleJobs.map((job) => ({
   ...job,
+  sourceOrigin: "built-in-catalog",
   market: "美国",
   employmentType: job.employmentType ?? "全职",
   posted: "待重新核验",
@@ -437,6 +438,7 @@ const chinaJobPool = [
   },
 ].map((job) => ({
   ...job,
+  sourceOrigin: "built-in-catalog",
   employmentType: job.employmentType ?? "全职",
   posted: "待重新核验",
   verificationStatus: "needs-review",

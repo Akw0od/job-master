@@ -21,6 +21,13 @@ import {
   isTrackedApplication,
 } from "../src/domain/applications.js";
 import {
+  deriveOfficialJobProvider,
+  derivePostingUrl,
+  normalizeReceiptUrl,
+  withNormalizedSourceReceipt,
+} from "../src/domain/sourceReceipt.js";
+import { jobPoolsByMarket } from "../src/data/jobCatalog.js";
+import {
   dashboardSchemaVersion,
   dashboardStorageKey,
   clearKnownDashboards,
@@ -283,8 +290,170 @@ test("manual JD jobs preserve the complete source and reject generic career URLs
 
   assert.equal(job.jdText, jdText);
   assert.equal(job.jdComplete, true);
+  assert.equal(job.jdHashAlgorithm, "fnv-1a-32");
+  assert.equal(job.sourceReceipt.origin, "user-pasted");
+  assert.equal(job.sourceReceipt.jdHash, job.jdHash);
+  assert.equal(job.sourceReceipt.jdHashAlgorithm, "fnv-1a-32");
+  assert.equal(job.sourceReceipt.verificationState, "needs-review");
   assert.equal(isSpecificApplicationUrl("https://example.com/careers"), false);
   assert.equal(isSpecificApplicationUrl("https://example.com/jobs/123"), true);
+  assert.equal(isSpecificApplicationUrl("https://user:secret@example.com/jobs/123"), false);
+});
+
+test("source receipt extracts only known official provider IDs and leaves unsafe IDs blank", () => {
+  assert.deepEqual(deriveOfficialJobProvider("https://jobs.ashbyhq.com/openai/eaf9207e-84c9-4fa2-bd57-6877b7eb7f79/application"), {
+    provider: "ashby", providerJobId: "eaf9207e-84c9-4fa2-bd57-6877b7eb7f79",
+  });
+  assert.deepEqual(deriveOfficialJobProvider("https://job-boards.greenhouse.io/anthropic/jobs/5238637008"), {
+    provider: "greenhouse", providerJobId: "5238637008",
+  });
+  assert.deepEqual(deriveOfficialJobProvider("https://boards.greenhouse.io/example?gh_jid=987654"), {
+    provider: "greenhouse", providerJobId: "987654",
+  });
+  assert.deepEqual(deriveOfficialJobProvider("https://jobs.lever.co/palantir/636fc05c-d348-4a06-be51-597cb9e07488/apply"), {
+    provider: "lever", providerJobId: "636fc05c-d348-4a06-be51-597cb9e07488",
+  });
+  assert.deepEqual(deriveOfficialJobProvider("https://jobs.apple.com/en-us/details/200643348-0836/swift-engineer"), {
+    provider: "apple-jobs", providerJobId: "200643348-0836",
+  });
+  assert.deepEqual(deriveOfficialJobProvider("https://career.huawei.com/reccampportal/portal5/social-recruitment-detail.html?jobId=32189"), {
+    provider: "huawei-careers", providerJobId: "32189",
+  });
+  assert.deepEqual(deriveOfficialJobProvider("https://hr.xiaomi.com/job/view/640"), {
+    provider: "xiaomi-careers", providerJobId: "640",
+  });
+  assert.deepEqual(deriveOfficialJobProvider("https://stripe.com/jobs/listing/backend-engineer/7232592"), {
+    provider: "stripe-jobs", providerJobId: "7232592",
+  });
+  assert.deepEqual(deriveOfficialJobProvider("https://jobs.lever.co/example/not-a-safe-id"), {
+    provider: "lever", providerJobId: "",
+  });
+  assert.deepEqual(deriveOfficialJobProvider("http://example.com/jobs/123"), {
+    provider: "unknown", providerJobId: "",
+  });
+  assert.deepEqual(deriveOfficialJobProvider("https://careers.example.com/job/software-engineer?gh_jid=4321"), {
+    provider: "greenhouse", providerJobId: "4321",
+  });
+});
+
+test("static and legacy jobs migrate to truthful source receipts without inventing evidence", () => {
+  const merged = mergeJobPools({
+    美国: [{
+      id: "catalog-role",
+      company: "Example",
+      role: "Engineer",
+      market: "美国",
+      employmentType: "全职",
+      stage: "进行中",
+      sourceOrigin: "built-in-catalog",
+      applyUrl: "https://example.com/jobs/123",
+    }],
+  });
+  const catalogReceipt = merged.美国[0].sourceReceipt;
+  assert.equal(catalogReceipt.origin, "built-in-catalog");
+  assert.equal(catalogReceipt.verificationState, "needs-review");
+  assert.equal(catalogReceipt.fetchedAt, "");
+  assert.equal(catalogReceipt.verifiedAt, "");
+  assert.equal(catalogReceipt.jdHash, "");
+  assert.equal(catalogReceipt.jdHashAlgorithm, "none");
+
+  const builtInPools = mergeJobPools(jobPoolsByMarket);
+  assert.equal(builtInPools.美国[0].sourceReceipt.origin, "built-in-catalog");
+  assert.equal(builtInPools.中国[0].sourceReceipt.origin, "built-in-catalog");
+
+  const migrated = readDashboard({
+    getItem: (key) => key === legacyDashboardStorageKey ? JSON.stringify({
+      applications: [{
+        id: "legacy-role",
+        status: "已投递",
+        stage: "进行中",
+        jdText: "Historical description",
+        jdHash: "deadbeef",
+      }],
+    }) : null,
+    setItem: () => {},
+  });
+  const legacyReceipt = migrated.applications[0].sourceReceipt;
+  assert.equal(legacyReceipt.origin, "legacy-cache");
+  assert.equal(legacyReceipt.verificationState, "needs-review");
+  assert.equal(legacyReceipt.fetchedAt, "");
+  assert.equal(legacyReceipt.verifiedAt, "");
+  assert.equal(legacyReceipt.jdHash, "deadbeef");
+  assert.equal(legacyReceipt.jdHashAlgorithm, "legacy-unknown");
+});
+
+test("source receipts reject unsafe URLs and derive posting URLs only for known ATS application suffixes", () => {
+  assert.equal(derivePostingUrl("https://jobs.ashbyhq.com/openai/eaf9207e-84c9-4fa2-bd57-6877b7eb7f79/application"), "https://jobs.ashbyhq.com/openai/eaf9207e-84c9-4fa2-bd57-6877b7eb7f79");
+  assert.equal(derivePostingUrl("https://jobs.lever.co/palantir/636fc05c-d348-4a06-be51-597cb9e07488/apply"), "https://jobs.lever.co/palantir/636fc05c-d348-4a06-be51-597cb9e07488");
+  assert.equal(derivePostingUrl("https://example.com/jobs/apply"), "https://example.com/jobs/apply");
+  assert.equal(normalizeReceiptUrl("javascript:alert(1)"), "");
+  assert.equal(normalizeReceiptUrl("data:text/html,unsafe"), "");
+  assert.equal(normalizeReceiptUrl("https://user:secret@example.com/jobs/123"), "");
+
+  const receipt = withNormalizedSourceReceipt({
+    id: "legacy-tampered",
+    sourceReceipt: {
+      origin: "legacy-cache",
+      postingUrl: "javascript:alert(1)",
+      applyUrl: "data:text/html,unsafe",
+      fetchedAt: "not-a-date",
+      verifiedAt: "not-a-date",
+      providerJobId: "untrusted-id",
+    },
+    url: "https://user:secret@example.com/jobs/123",
+    applyUrl: "javascript:alert(1)",
+  }).sourceReceipt;
+  assert.equal(receipt.postingUrl, "");
+  assert.equal(receipt.applyUrl, "");
+  assert.equal(receipt.providerJobId, "");
+  assert.equal(receipt.fetchedAt, "");
+  assert.equal(receipt.verifiedAt, "");
+});
+
+test("URL checks retain live source evidence while a closed tracked job leaves discovery", () => {
+  const receipt = {
+    schemaVersion: 1,
+    origin: "live-official-search",
+    provider: "ashby",
+    providerJobId: "eaf9207e-84c9-4fa2-bd57-6877b7eb7f79",
+    postingUrl: "https://jobs.ashbyhq.com/openai/eaf9207e-84c9-4fa2-bd57-6877b7eb7f79",
+    applyUrl: "https://jobs.ashbyhq.com/openai/eaf9207e-84c9-4fa2-bd57-6877b7eb7f79",
+    fetchedAt: "2026-07-24T00:00:00.000Z",
+    verificationState: "open",
+    verifiedAt: "2026-07-24T00:00:00.000Z",
+    verificationReason: "live-search-verified",
+    jdHash: "abc123",
+    jdHashAlgorithm: "sha-256",
+  };
+  const job = {
+    id: "live-tracked-receipt", company: "OpenAI", role: "Engineer", market: "美国", employmentType: "全职",
+    stage: "进行中", status: "已投递", userTracked: true, jdSource: "official-summary",
+    verificationStatus: "verified", applyUrl: receipt.applyUrl, url: receipt.postingUrl, jdHash: receipt.jdHash,
+    sourceReceipt: receipt,
+  };
+  const closed = applyLiveUrlVerificationResults([job], [{
+    url: receipt.applyUrl, state: "closed", checkedAt: "2026-07-26T00:00:00.000Z",
+  }])[0];
+  assert.equal(closed.verificationStatus, "unavailable");
+  assert.equal(closed.userTracked, true);
+  assert.equal(closed.sourceReceipt.verificationState, "closed");
+  assert.equal(closed.sourceReceipt.verifiedAt, "2026-07-26T00:00:00.000Z");
+  assert.equal(closed.sourceReceipt.fetchedAt, receipt.fetchedAt);
+  assert.equal(closed.sourceReceipt.jdHash, receipt.jdHash);
+  assert.deepEqual(filterDiscoverableJobs([closed], "美国", "全职"), []);
+
+  const open = applyLiveUrlVerificationResults([job], [{
+    url: receipt.applyUrl, state: "open", checkedAt: "2026-07-26T01:00:00.000Z", reason: "url-open",
+  }])[0];
+  assert.equal(open.verificationStatus, "verified");
+  assert.equal(open.sourceReceipt.verifiedAt, "2026-07-26T01:00:00.000Z");
+  assert.equal(open.sourceReceipt.verificationReason, "url-open");
+  const unknown = applyLiveUrlVerificationResults([job], [{
+    url: receipt.applyUrl, state: "unknown", checkedAt: "2026-07-26T02:00:00.000Z", reason: "network-or-inconclusive",
+  }])[0];
+  assert.equal(unknown.verificationStatus, "unknown");
+  assert.equal(unknown.sourceReceipt.verificationState, "unknown");
+  assert.equal(unknown.sourceReceipt.verificationReason, "network-or-inconclusive");
 });
 
 test("dashboard storage migrates legacy tracking and writes a schema version", () => {

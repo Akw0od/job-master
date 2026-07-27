@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { deriveOfficialJobProvider, derivePostingUrl, sourceReceiptSchemaVersion } from "../src/domain/sourceReceipt.js";
 import { lookup as dnsLookup } from "node:dns/promises";
 import https from "node:https";
 import { isIP } from "node:net";
@@ -279,8 +280,8 @@ const verificationState = Object.freeze({
   unknown: "unknown",
 });
 
-function asUnknown() {
-  return { state: verificationState.unknown };
+function asUnknown(reason = "network-or-inconclusive") {
+  return { state: verificationState.unknown, reason };
 }
 
 async function resolvePublicHost(url, resolveHostname) {
@@ -365,10 +366,10 @@ function createCheckedRequester({ fetchImpl, requestImpl, resolveHostname, https
   return async (value, options, { jobUrl = false } = {}) => {
     const url = normalizeUrl(value);
     if (!url || url.protocol !== "https:" || (jobUrl && !isSpecificJobUrl(url.href)) || !isPublicJobHost(url)) {
-      return asUnknown();
+      return asUnknown("invalid-or-unsafe-url");
     }
     const resolvedAddress = resolve ? await resolvePublicHost(url, resolve) : null;
-    if (resolve && !resolvedAddress) return asUnknown();
+    if (resolve && !resolvedAddress) return asUnknown("network-or-inconclusive");
     try {
       const response = requestImpl
         ? await requestImpl(url.href, options, resolvedAddress)
@@ -377,14 +378,14 @@ function createCheckedRequester({ fetchImpl, requestImpl, resolveHostname, https
           : await requestPinnedHttps(url, options, resolvedAddress, httpsRequestImpl);
       return { state: verificationState.open, response };
     } catch {
-      return asUnknown();
+      return asUnknown("network-or-inconclusive");
     }
   };
 }
 
 async function isPublishedAshbyJob(url, requestUrl, signal) {
   const reference = getAshbyJobReference(url);
-  if (!reference) return { state: verificationState.open };
+  if (!reference) return { state: verificationState.open, reason: "url-open" };
 
   const requested = await requestUrl(
     `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(reference.jobBoard)}`,
@@ -396,18 +397,18 @@ async function isPublishedAshbyJob(url, requestUrl, signal) {
     },
     { jobUrl: false },
   );
-  if (requested.state !== verificationState.open) return asUnknown();
+  if (requested.state !== verificationState.open) return asUnknown(requested.reason);
   const { response } = requested;
   if (!response.ok || (response.status >= 300 && response.status < 400)) {
     await cancelResponseBody(response.body);
-    return asUnknown();
+    return asUnknown("network-or-inconclusive");
   }
   try {
     const scan = await ashbyBoardContainsJobId(response.body, reference.jobId);
-    if (scan.found) return { state: verificationState.open };
-    return scan.complete ? { state: verificationState.closed } : asUnknown();
+    if (scan.found) return { state: verificationState.open, reason: "ashby-published" };
+    return scan.complete ? { state: verificationState.closed, reason: "ashby-not-published" } : asUnknown("bounded-response");
   } catch {
-    return asUnknown();
+    return asUnknown("network-or-inconclusive");
   }
 }
 
@@ -503,31 +504,56 @@ function stableJobId(job) {
   return `live-${digest}`;
 }
 
+function sha256Hex(value) {
+  return createHash("sha256").update(String(value ?? ""), "utf8").digest("hex");
+}
+
 export function normalizeJobSearchResult(
   result,
   payload,
   verifiedJobs,
   searchedAt = new Date().toISOString(),
   rejectedApplyUrls = [],
+  verificationChecks = [],
 ) {
   const unique = new Map();
   for (const job of verifiedJobs) {
     if (job.employmentType !== payload.employmentType) continue;
     const key = `${String(job.company).toLowerCase()}|${String(job.role).toLowerCase()}|${job.applyUrl}`;
     if (unique.has(key)) continue;
+    const jdText = String(job.jdText || "").trim();
+    const applyUrl = String(job.applyUrl || "").trim();
+    const providerData = deriveOfficialJobProvider(applyUrl);
+    const jdHash = sha256Hex(jdText);
     unique.set(key, {
       id: stableJobId(job),
       company: String(job.company).trim(),
       role: String(job.role).trim(),
       location: String(job.location || "待确认").trim(),
       employmentType: job.employmentType,
-      applyUrl: job.applyUrl,
+      applyUrl,
       source: String(job.source || "官网职位页").trim(),
       posted: String(job.posted || "链接已核验").trim(),
       summary: String(job.summary || "").trim(),
-      jdText: String(job.jdText || "").trim(),
+      jdText,
+      jdHash,
+      jdHashAlgorithm: "sha-256",
       requirements: Array.isArray(job.requirements) ? job.requirements.map(String).filter(Boolean).slice(0, 12) : [],
       verifiedAt: searchedAt,
+      sourceReceipt: {
+        schemaVersion: sourceReceiptSchemaVersion,
+        origin: "live-official-search",
+        provider: providerData.provider,
+        providerJobId: providerData.providerJobId,
+        postingUrl: derivePostingUrl(applyUrl),
+        applyUrl,
+        fetchedAt: searchedAt,
+        verificationState: "open",
+        verifiedAt: searchedAt,
+        verificationReason: String(job.verificationReason || "live-search-verified"),
+        jdHash,
+        jdHashAlgorithm: "sha-256",
+      },
     });
   }
   return {
@@ -538,6 +564,15 @@ export function normalizeJobSearchResult(
     // deterministic closure results here: tracked closed roles must all be
     // marked unavailable, not only the first page of them.
     rejectedApplyUrls: [...new Set(rejectedApplyUrls)],
+    verificationChecks: Array.isArray(verificationChecks)
+      ? verificationChecks.filter((check) => (
+        check
+        && typeof check.url === "string"
+        && ["open", "closed", "unknown"].includes(check.state)
+        && typeof check.checkedAt === "string"
+        && typeof check.reason === "string"
+      )).slice(0, 88)
+      : [],
     notes: Array.isArray(result.notes) ? result.notes.map(String).slice(0, 4) : [],
   };
 }
@@ -581,32 +616,32 @@ async function checkJobUrl(job, requestUrl) {
         } finally {
           await cancelResponseBody(response.body);
         }
-        if (redirectCount === maxJobRedirects || !location) return asUnknown();
+        if (redirectCount === maxJobRedirects || !location) return asUnknown("redirect-inconclusive");
         try {
           currentUrl = new URL(location, currentUrl).href;
         } catch {
-          return asUnknown();
+          return asUnknown("redirect-inconclusive");
         }
         continue;
       }
       if (response.status === 404 || response.status === 410) {
         await cancelResponseBody(response.body);
-        return { state: verificationState.closed };
+        return { state: verificationState.closed, reason: "http-404-or-410" };
       }
       if (!response.ok) {
         await cancelResponseBody(response.body);
-        return asUnknown();
+        return asUnknown("network-or-inconclusive");
       }
       const preview = await readResponsePreview(response.body);
-      if (hasClosedJobPageSignal(preview.preview)) return { state: verificationState.closed };
-      if (!preview.complete) return asUnknown();
+      if (hasClosedJobPageSignal(preview.preview)) return { state: verificationState.closed, reason: "closed-page-signal" };
+      if (!preview.complete) return asUnknown("bounded-response");
       const ashbyStatus = await isPublishedAshbyJob(currentUrl, requestUrl, controller.signal);
       if (ashbyStatus.state !== verificationState.open) return ashbyStatus;
-      return { state: verificationState.open, job: { ...job, applyUrl: currentUrl } };
+      return { state: verificationState.open, reason: ashbyStatus.reason ?? "url-open", job: { ...job, applyUrl: currentUrl } };
     }
-    return asUnknown();
+    return asUnknown("redirect-inconclusive");
   } catch {
-    return asUnknown();
+    return asUnknown("network-or-inconclusive");
   } finally {
     clearTimeout(timeout);
   }
@@ -632,6 +667,7 @@ export async function verifyJobUrls(
       url,
       state: verification.state,
       checkedAt,
+      reason: verification.reason ?? "network-or-inconclusive",
     })),
   };
 }
@@ -679,6 +715,16 @@ export async function verifyJobSearchResult(
     async ([key, entry]) => [key, await checkJobUrl(entry.job ?? { applyUrl: entry.applyUrl }, requestUrl)],
   );
   const verificationByUrl = new Map(checkedWork);
+  const checkedAt = new Date().toISOString();
+  const verificationChecks = [...workByUrl.entries()].map(([key, entry]) => {
+    const verification = verificationByUrl.get(key) ?? asUnknown();
+    return {
+      url: entry.job?.applyUrl ?? entry.applyUrl,
+      state: verification.state,
+      checkedAt,
+      reason: verification.reason ?? "network-or-inconclusive",
+    };
+  });
   const checkedCandidates = candidateEntries.map((entry) => ({
     ...entry,
     verification: entry.attempted ? verificationByUrl.get(entry.key) ?? asUnknown() : asUnknown(),
@@ -696,8 +742,11 @@ export async function verifyJobSearchResult(
   return normalizeJobSearchResult(
     result ?? {},
     payload,
-    checkedCandidates.flatMap(({ verification }) => verification.state === verificationState.open && verification.job ? [verification.job] : []),
-    new Date().toISOString(),
+    checkedCandidates.flatMap(({ verification }) => verification.state === verificationState.open && verification.job
+      ? [{ ...verification.job, verificationReason: verification.reason ?? "live-search-verified" }]
+      : []),
+    checkedAt,
     rejectedApplyUrls,
+    verificationChecks,
   );
 }

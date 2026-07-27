@@ -1,3 +1,5 @@
+import { deriveOfficialJobProvider, derivePostingUrl, sourceReceiptSchemaVersion } from "./sourceReceipt.js";
+
 const trackedStatuses = new Set(["收藏", "准备中", "已投递", "面试", "Offer", "未通过", "已归档"]);
 
 export const applicationStatusOptions = ["收藏", "准备中", "已投递", "面试", "Offer", "未通过", "已归档"];
@@ -44,6 +46,7 @@ export function isSpecificApplicationUrl(value) {
   try {
     const url = new URL(value);
     if (url.protocol !== "https:") return false;
+    if (url.username || url.password) return false;
     if (/^(?:www\.)?(?:google|bing|baidu)\./i.test(url.hostname)) return false;
     if (url.searchParams.get("error") === "true") return false;
     const normalizedPath = url.pathname.replace(/\/+$/, "") || "/";
@@ -90,6 +93,8 @@ export function buildImportedJob({
 }) {
   const normalizedJd = String(jdText ?? "").trim();
   const normalizedUrl = String(applicationUrl ?? "").trim();
+  const jdHash = hashText(normalizedJd);
+  const providerData = deriveOfficialJobProvider(normalizedUrl);
   const id = `imported-${hashText(`${company}|${role}|${normalizedJd}|${now}`)}`;
   return {
     id,
@@ -119,7 +124,8 @@ export function buildImportedJob({
     verificationStatus: normalizedUrl ? "needs-review" : "manual",
     verifiedAt: "",
     jdText: normalizedJd,
-    jdHash: hashText(normalizedJd),
+    jdHash,
+    jdHashAlgorithm: "fnv-1a-32",
     jdSource: "user-pasted",
     jdComplete: true,
     summary: summarizeJobDescription(normalizedJd),
@@ -127,5 +133,18 @@ export function buildImportedJob({
     gaps: missingSignals.length
       ? missingSignals.map((signal) => `Master Resume 中尚未确认：${signal}`)
       : ["需要逐条核对 JD 要求与 Master Resume 事实", "地点、授权和截止时间仍需本人确认"],
+    sourceReceipt: {
+      schemaVersion: sourceReceiptSchemaVersion,
+      origin: "user-pasted",
+      ...providerData,
+      postingUrl: derivePostingUrl(normalizedUrl),
+      applyUrl: normalizedUrl,
+      fetchedAt: "",
+      verificationState: normalizedUrl ? "needs-review" : "manual",
+      verifiedAt: "",
+      verificationReason: normalizedUrl ? "manual-jd-needs-review" : "manual-jd-no-application-url",
+      jdHash,
+      jdHashAlgorithm: "fnv-1a-32",
+    },
   };
 }
