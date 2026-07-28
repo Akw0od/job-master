@@ -1,4 +1,6 @@
 const englishCopy = {
+  "无法安全定位这处原文，未修改简历；请重新生成建议后再审核。": "This source text could not be located safely, so the resume was not changed. Regenerate the suggestion before reviewing again.",
+  "无法安全定位这处改写，未修改简历；请重新生成建议后再审核。": "This rewrite could not be located safely, so the resume was not changed. Regenerate the suggestion before reviewing again.",
   "来源凭据": "Source receipt",
   "默认收起；展开查看来源和核验记录": "Collapsed by default; expand for source and verification records",
   "来源类型": "Origin",

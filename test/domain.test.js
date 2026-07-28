@@ -43,11 +43,14 @@ import {
 } from "../src/resume/resumeIO.js";
 import {
   applyResumeChange,
+  applyResumeChangeResult,
   assessResumeStructure,
   buildResumeSectionBlocks,
   computeResumeChanges,
+  materializeResumeReview,
   parseResumeDocument,
   revertResumeChange,
+  revertResumeChangeResult,
   saveEditableResumeVersion,
   selectResumeVersionForDirection,
   summarizeResumeReview,
@@ -478,7 +481,7 @@ test("dashboard storage migrates legacy tracking and writes a schema version", (
   assert.equal(JSON.parse(values.get(dashboardStorageKey)).schemaVersion, dashboardSchemaVersion);
 });
 
-test("dashboard storage migrates the previous v3 key and normalizes paper size", () => {
+test("dashboard storage migrates the previous v5 key and normalizes paper size", () => {
   const values = new Map([
     [previousDashboardStorageKey, JSON.stringify({ resumePageSize: "Letter", applications: [] })],
   ]);
@@ -490,6 +493,22 @@ test("dashboard storage migrates the previous v3 key and normalizes paper size",
   const migrated = readDashboard(storage);
   assert.equal(migrated.schemaVersion, dashboardSchemaVersion);
   assert.equal(migrated.resumePageSize, "Letter");
+});
+
+test("dashboard storage migrates v5 resume lineage without fabricating or dropping audit fields", () => {
+  const patchAudit = [{ patchId: "patch-v2-abc", baseHash: "base", before: "A", after: "B", decision: "accepted" }];
+  const values = new Map([
+    [previousDashboardStorageKey, JSON.stringify({
+      schemaVersion: 5,
+      applications: [{ id: "kept", sourceReceipt: { origin: "legacy-cache" } }],
+      resumeVersions: [{ id: "direction-v1", parentVersionId: "master-resume", patchAudit, content: "B" }],
+    })],
+  ]);
+  const storage = { getItem: (key) => values.get(key) ?? null };
+  const migrated = readDashboard(storage);
+  assert.equal(migrated.schemaVersion, 6);
+  assert.deepEqual(migrated.resumeVersions[0].patchAudit, patchAudit);
+  assert.equal(migrated.resumeVersions[0].parentVersionId, "master-resume");
 });
 
 test("dashboard storage invalidates old and malformed current score payloads", () => {
@@ -661,6 +680,214 @@ test("accepting or rejecting the same inserted or removed line is idempotent", (
   const removed = applyResumeChange(source, removal);
   const restored = revertResumeChange(removed, removal);
   assert.equal(revertResumeChange(restored, removal), restored);
+});
+
+test("insertion and removal patches report safe idempotent result states", () => {
+  const source = "SUMMARY\nBuilt reports\nEXPERIENCE\nShipped dashboards";
+  const revised = "SUMMARY\nBuilt reports\nAdded validation\nEXPERIENCE";
+  const changes = computeResumeChanges(source, revised);
+  const insertion = changes.find((change) => change.beforeLines.length === 0);
+  const removal = changes.find((change) => change.afterLines.length === 0);
+
+  assert.equal(revertResumeChangeResult(source, insertion).status, "already-reverted");
+  const afterInsertion = applyResumeChangeResult(source, insertion).text;
+  const revertedInsertion = revertResumeChangeResult(afterInsertion, insertion);
+  assert.equal(revertedInsertion.status, "applied");
+  assert.equal(revertResumeChangeResult(revertedInsertion.text, insertion).status, "already-reverted");
+
+  const afterRemoval = applyResumeChangeResult(source, removal);
+  assert.equal(afterRemoval.status, "applied");
+  assert.equal(applyResumeChangeResult(afterRemoval.text, removal).status, "already-applied");
+});
+
+test("empty patch contexts mean document boundaries, not arbitrary gaps", () => {
+  const endSource = "SUMMARY\nBuilt reports\nEXPERIENCE\nShipped dashboards";
+  const endRevised = "SUMMARY\nBuilt reports\nAdded validation\nEXPERIENCE";
+  const endRemoval = computeResumeChanges(endSource, endRevised).find((change) => change.afterLines.length === 0);
+  assert.equal(
+    applyResumeChangeResult("SUMMARY\nBuilt reports\nEXPERIENCE\nManually changed dashboards", endRemoval).status,
+    "conflict",
+  );
+
+  const startSource = "Built reports\nEXPERIENCE\nShipped dashboards";
+  const startRevised = "EXPERIENCE\nShipped dashboards";
+  const startRemoval = computeResumeChanges(startSource, startRevised).find((change) => change.afterLines.length === 0);
+  assert.equal(
+    applyResumeChangeResult("Manually changed reports\nEXPERIENCE\nShipped dashboards", startRemoval).status,
+    "conflict",
+  );
+});
+
+test("mixed insertion and duplicate-line removal roll back safely in both orders", () => {
+  const source = "D\nB\nB\nC\nA";
+  const revised = "Z\nD\nB\nC\nA";
+  const changes = computeResumeChanges(source, revised);
+  assert.equal(changes.length, 2);
+  for (const ordered of [changes, [...changes].reverse()]) {
+    const applied = ordered.reduce((text, change) => {
+      const result = applyResumeChangeResult(text, change);
+      assert.equal(result.status, "applied");
+      return result.text;
+    }, source);
+    assert.equal(applied, revised);
+    const rolledBack = [...ordered].reverse().reduce((text, change) => {
+      const result = revertResumeChangeResult(text, change);
+      assert.equal(result.status, "applied");
+      return result.text;
+    }, applied);
+    assert.equal(rolledBack, source);
+  }
+});
+
+test("patch v2 targets the second repeated bullet and produces deterministic audit IDs", () => {
+  const source = "EXPERIENCE\nTeam A\n• Built dashboards\nTeam B\n• Built dashboards";
+  const revised = "EXPERIENCE\nTeam A\n• Built dashboards\nTeam B\n• Built reliable dashboards";
+  const [change] = computeResumeChanges(source, revised);
+  const repeated = computeResumeChanges(source, revised)[0];
+
+  assert.equal(change.patchVersion, 2);
+  assert.equal(change.patchId, repeated.patchId);
+  assert.ok(change.baseHash);
+  assert.ok(change.targetBlockId);
+  assert.equal(applyResumeChangeResult(source, change).text, revised);
+});
+
+test("patch v2 applies two identical-text changes in either order", () => {
+  const source = "EXPERIENCE\nTeam A\n• Built dashboards\n• Built dashboards";
+  const revised = "EXPERIENCE\nTeam A\n• Built analytics dashboards\n• Built reliable dashboards";
+  const changes = computeResumeChanges(source, revised);
+  assert.equal(changes.length, 2);
+  const forward = changes.reduce((text, change) => applyResumeChangeResult(text, change).text, source);
+  const reverse = [...changes].reverse().reduce((text, change) => applyResumeChangeResult(text, change).text, source);
+  assert.equal(forward, revised);
+  assert.equal(reverse, revised);
+  changes.forEach((change) => assert.equal(applyResumeChangeResult(forward, change).status, "already-applied"));
+  [...changes].reverse().forEach((change) => assert.equal(applyResumeChangeResult(reverse, change).status, "already-applied"));
+  const revertedForward = [...changes].reverse().reduce((text, change) => revertResumeChangeResult(text, change).text, forward);
+  const revertedReverse = changes.reduce((text, change) => revertResumeChangeResult(text, change).text, reverse);
+  assert.equal(revertedForward, source);
+  assert.equal(revertedReverse, source);
+  changes.forEach((change) => assert.equal(revertResumeChangeResult(revertedForward, change).status, "already-reverted"));
+  [...changes].reverse().forEach((change) => assert.equal(revertResumeChangeResult(revertedReverse, change).status, "already-reverted"));
+});
+
+test("patch v2 review materializes from the immutable source regardless of decision order", () => {
+  const cases = [
+    [
+      "EXPERIENCE\nTeam A\n• Built dashboards\n• Built dashboards",
+      "EXPERIENCE\nTeam A\n• Built analytics dashboards\n• Built reliable dashboards",
+    ],
+    ["D\nB\nB\nC\nA", "Z\nD\nB\nC\nA"],
+    ["A\nD\nD", "Y\nA\nD\nZ"],
+    ["SUMMARY\nA\nB\nC\nD", "SUMMARY\nA revised\nB\nInserted\nC\nD revised"],
+  ];
+
+  cases.forEach(([source, revised]) => {
+    const changes = computeResumeChanges(source, revised);
+    assert.ok(changes.length > 0);
+    const decisions = {};
+    [...changes].reverse().forEach((change, index) => {
+      decisions[`review:${change.patchId ?? changes.length - index - 1}`] = "accepted";
+    });
+    const materialized = materializeResumeReview(source, changes, decisions, "review");
+    assert.equal(materialized.status, "applied");
+    assert.equal(materialized.text, revised);
+
+    const rejected = Object.fromEntries(changes.map((change, index) => [
+      `review:${change.patchId ?? index}`,
+      "rejected",
+    ]));
+    assert.equal(materializeResumeReview(source, changes, rejected, "review").text, source);
+  });
+});
+
+test("patch v2 review preserves blank lines when inserting at document and section boundaries", () => {
+  const cases = [
+    ["A\nB\n", "A\nB\nX\n"],
+    ["", "X"],
+    ["A\n\nB\n\n", "A\n\nX\nB\n\n"],
+  ];
+
+  cases.forEach(([source, revised]) => {
+    const changes = computeResumeChanges(source, revised);
+    const decisions = Object.fromEntries(changes.map((change, index) => [
+      `review:${change.patchId ?? index}`,
+      "accepted",
+    ]));
+    const materialized = materializeResumeReview(source, changes, decisions, "review");
+    assert.equal(materialized.status, "applied");
+    assert.equal(materialized.text, revised);
+  });
+});
+
+test("patch v2 review fails closed when its immutable source or audit is tampered", () => {
+  const source = "SUMMARY\nBuilt reports\nEXPERIENCE\nShipped dashboards";
+  const revised = "SUMMARY\nBuilt automated reports\nEXPERIENCE\nShipped dashboards";
+  const changes = computeResumeChanges(source, revised);
+  const decisions = { [`review:${changes[0].patchId}`]: "accepted" };
+
+  const staleSource = "SUMMARY\nManually changed reports\nEXPERIENCE\nShipped dashboards";
+  const stale = materializeResumeReview(staleSource, changes, decisions, "review");
+  assert.equal(stale.status, "conflict");
+  assert.equal(stale.text, staleSource);
+  assert.deepEqual(stale.conflicts, [changes[0].patchId]);
+
+  const tampered = [{ ...changes[0], baseHash: "tampered" }];
+  const tamperedResult = materializeResumeReview(source, tampered, decisions, "review");
+  assert.equal(tamperedResult.status, "conflict");
+  assert.equal(tamperedResult.text, source);
+  assert.deepEqual(tamperedResult.conflicts, [changes[0].patchId]);
+
+  const tamperedLocator = [{
+    ...changes[0],
+    locator: { ...changes[0].locator, rawStart: changes[0].locator.rawStart + 1 },
+  }];
+  const locatorResult = materializeResumeReview(source, tamperedLocator, decisions, "review");
+  assert.equal(locatorResult.status, "conflict");
+  assert.equal(locatorResult.text, source);
+  assert.deepEqual(locatorResult.conflicts, [changes[0].patchId]);
+});
+
+test("patch v2 never emits more changes than its limit when splitting a multi-line hunk", () => {
+  const source = Array.from({ length: 40 }, () => "Built dashboards").join("\n");
+  const revised = Array.from({ length: 40 }, (_, index) => `Built dashboard ${index + 1}`).join("\n");
+  assert.equal(computeResumeChanges(source, revised, 7).length, 7);
+});
+
+test("patch v2 fails closed when a target is stale or still ambiguous and is idempotent", () => {
+  const source = "EXPERIENCE\nTeam A\n• Built dashboards\nTeam B\n• Built dashboards";
+  const revised = "EXPERIENCE\nTeam A\n• Built dashboards\nTeam B\n• Built reliable dashboards";
+  const [change] = computeResumeChanges(source, revised);
+  const applied = applyResumeChangeResult(source, change);
+  assert.equal(applied.status, "applied");
+  assert.equal(applyResumeChangeResult(applied.text, change).status, "already-applied");
+  assert.equal(revertResumeChangeResult(applied.text, change).status, "applied");
+  assert.equal(revertResumeChangeResult(source, change).status, "already-reverted");
+
+  const ambiguous = { ...change, locator: { beforeContext: [], afterContext: [] } };
+  const result = applyResumeChangeResult(source, ambiguous);
+  assert.equal(result.status, "conflict");
+  assert.equal(result.text, source);
+  const stale = applyResumeChangeResult(source.replace("Team B\n• Built dashboards", "Team B\n• Manually changed dashboards"), change);
+  assert.equal(stale.status, "conflict");
+});
+
+test("patch v2 rejects a unique target text moved away from its structural position", () => {
+  const source = "A\nTarget\nB";
+  const revised = "A\nChanged\nB";
+  const [change] = computeResumeChanges(source, revised);
+  const result = applyResumeChangeResult("Target\nA\nB", change);
+  assert.equal(result.status, "conflict");
+  assert.equal(result.text, "Target\nA\nB");
+});
+
+test("patch v2 does not mistake an unrelated existing rewrite for the intended target", () => {
+  const source = "EXPERIENCE\nTeam A\n• Built dashboards\nTeam B\n• Built reliable dashboards";
+  const revised = "EXPERIENCE\nTeam A\n• Built reliable dashboards\nTeam B\n• Built reliable dashboards";
+  const [change] = computeResumeChanges(source, revised);
+  const result = applyResumeChangeResult(source, change);
+  assert.equal(result.status, "applied");
+  assert.equal(result.text, revised);
 });
 
 test("manual save updates only an editable resume version", () => {

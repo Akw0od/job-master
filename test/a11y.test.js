@@ -60,4 +60,8 @@ test("source receipt uses a native collapsed disclosure with localized labels", 
   assert.match(appSource, /function formatReceiptTimestamp[\s\S]*?Number\.isFinite\(timestamp\)[\s\S]*?: t\("未提供"\)/);
   assert.match(appSource, /function formatReceiptHash[\s\S]*?if \(!receipt\?\.jdHash\) return t\("未提供"\)/);
   assert.match(appSource, /applyLiveUrlChecks\(liveSearchResult\.verificationChecks\)/);
+  assert.equal(
+    translateUiText("无法安全定位这处原文，未修改简历；请重新生成建议后再审核。", "en"),
+    "This source text could not be located safely, so the resume was not changed. Regenerate the suggestion before reviewing again.",
+  );
 });

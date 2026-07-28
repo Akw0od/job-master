@@ -31,7 +31,17 @@ const dashboard = {
       jdHashAlgorithm: "fnv-1a-32",
     },
   }],
-  resumeVersions: [{ id: "master-resume", content: "Ada Lovelace\nada@example.com\nSensitive resume facts" }],
+  resumeVersions: [{
+    id: "master-resume",
+    content: "Ada Lovelace\nada@example.com\nSensitive resume facts",
+  }, {
+    id: "direction-v2",
+    parentVersionId: "master-resume",
+    baseContent: "Ada Lovelace",
+    content: "Ada Lovelace, reliable systems engineer",
+    lineage: { parentVersionId: "master-resume", baseHash: "a1b2c3d4", patchVersion: 2 },
+    patchAudit: [{ patchId: "patch-v2-a1b2", before: "Ada Lovelace", after: "Ada Lovelace, reliable systems engineer", decision: "accepted" }],
+  }],
   candidateProfile: { name: "Ada Lovelace", email: "ada@example.com" },
 };
 
@@ -47,6 +57,8 @@ test("encrypted local dashboard backup round-trips without plaintext resume or p
   assert.equal(restored.resumeVersions[0].content, dashboard.resumeVersions[0].content);
   assert.equal(restored.candidateProfile.email, "ada@example.com");
   assert.deepEqual(restored.applications[0].sourceReceipt, dashboard.applications[0].sourceReceipt);
+  assert.deepEqual(restored.resumeVersions[1].patchAudit, dashboard.resumeVersions[1].patchAudit);
+  assert.deepEqual(restored.resumeVersions[1].lineage, dashboard.resumeVersions[1].lineage);
 });
 
 test("backup rejects wrong passwords, tampering, unsupported envelopes, and oversized files", async () => {

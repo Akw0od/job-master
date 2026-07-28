@@ -95,12 +95,11 @@ import { deriveOfficialJobProvider, derivePostingUrl, normalizeReceiptUrl } from
 import { getNextTabKey } from "./services/tabNavigation";
 import { clearKnownDashboards, readDashboard, writeDashboard } from "./storage/dashboardStorage";
 import {
-  applyResumeChange,
   assessResumeStructure,
   computeResumeChanges,
   isPlaceholderResume,
+  materializeResumeReview,
   normalizeImportedResumeText,
-  revertResumeChange,
   saveEditableResumeVersion,
   selectResumeVersionForDirection,
   summarizeResumeReview,
@@ -159,6 +158,10 @@ function formatReceiptTimestamp(value, uiLanguage, t) {
   return Number.isFinite(timestamp)
     ? new Date(timestamp).toLocaleString(uiLanguage === "en" ? "en-US" : "zh-CN")
     : t("未提供");
+}
+
+function resumeDecisionKey(scope, change, index) {
+  return `${scope}:${change?.patchId ?? index}`;
 }
 
 function formatReceiptHash(receipt, t) {
@@ -1280,6 +1283,22 @@ export function App() {
         jdHash: isJobVersion ? agentSuggestion.jdHash : undefined,
         jdSource: isJobVersion ? agentSuggestion.jdSource : undefined,
         reviewedAt: new Date().toISOString(),
+        lineage: {
+          parentVersionId: agentSuggestion.sourceVersionId ?? masterResumeVersion?.id,
+          baseHash: suggestionChanges[0]?.baseHash ?? "",
+          patchVersion: 2,
+        },
+        patchAudit: suggestionChanges.map((change, index) => ({
+          patchId: change.patchId,
+          patchVersion: change.patchVersion,
+          baseHash: change.baseHash,
+          targetBlockId: change.targetBlockId,
+          before: change.before,
+          after: change.after,
+          decision: resumeChangeDecisions[resumeDecisionKey(suggestionScope, change, index)]
+            ?? resumeChangeDecisions[`${suggestionScope}:${index}`]
+            ?? "pending",
+        })),
         reviewSummary: {
           accepted: reviewSummary.accepted,
           rejected: reviewSummary.rejected,
@@ -1396,26 +1415,32 @@ export function App() {
     setToast("正在查看锁定的上传原版。");
   }
 
-  function acceptResumeChange(change, index) {
+  function setResumeChangeDecision(change, index, decision) {
     if (!agentSuggestion) return;
     const scope = getSuggestionScope(agentSuggestion);
-    setAgentSuggestion((current) => current ? {
-      ...current,
-      reviewedResume: applyResumeChange(current.reviewedResume ?? current.sourceText, change),
-    } : current);
-    setResumeChangeDecisions((current) => ({ ...current, [`${scope}:${index}`]: "accepted" }));
-    setToast(`已接受第 ${index + 1} 处修改。`);
+    const changes = computeResumeChanges(agentSuggestion.sourceText, agentSuggestion.suggestedResume);
+    const nextDecisions = {
+      ...resumeChangeDecisions,
+      [resumeDecisionKey(scope, change, index)]: decision,
+    };
+    const result = materializeResumeReview(agentSuggestion.sourceText, changes, nextDecisions, scope);
+    if (result.status === "conflict") {
+      setToast(t("无法安全定位这处原文，未修改简历；请重新生成建议后再审核。"));
+      return;
+    }
+    setAgentSuggestion((current) => current ? { ...current, reviewedResume: result.text } : current);
+    setResumeChangeDecisions(nextDecisions);
+    setToast(decision === "accepted"
+      ? `已接受第 ${index + 1} 处修改。`
+      : `已拒绝第 ${index + 1} 处修改，保留对应原文。`);
+  }
+
+  function acceptResumeChange(change, index) {
+    setResumeChangeDecision(change, index, "accepted");
   }
 
   function rejectResumeChange(change, index) {
-    if (!agentSuggestion) return;
-    const scope = getSuggestionScope(agentSuggestion);
-    setAgentSuggestion((current) => current ? {
-      ...current,
-      reviewedResume: revertResumeChange(current.reviewedResume ?? current.sourceText, change),
-    } : current);
-    setResumeChangeDecisions((current) => ({ ...current, [`${scope}:${index}`]: "rejected" }));
-    setToast(`已拒绝第 ${index + 1} 处修改，保留对应原文。`);
+    setResumeChangeDecision(change, index, "rejected");
   }
 
   function beginResumeEditing() {
@@ -2371,7 +2396,8 @@ export function App() {
                     </header>
                     <div className="job-change-list">
                       {jobTailoringChanges.map((change, index) => {
-                        const decision = resumeChangeDecisions[`${jobSuggestionScope}:${index}`];
+                        const decision = resumeChangeDecisions[resumeDecisionKey(jobSuggestionScope, change, index)]
+                          ?? resumeChangeDecisions[`${jobSuggestionScope}:${index}`];
                         return (
                           <article className={`${decision ? `decision-${decision}` : ""} ${activeResumeChangeIndex === index ? "active-change" : ""}`} key={`${change.before}-${change.after}-${index}`}>
                             <button className="review-change-focus" onClick={() => focusResumeChange(index, "job")}>
@@ -2655,7 +2681,8 @@ export function App() {
                         <div className="resume-review-list">
                           {reviewableResumeChanges.map((change, index) => {
                             const scope = agentSuggestion ? agentSuggestionScope : activeResumeVersion?.id ?? "resume";
-                            const decision = resumeChangeDecisions[`${scope}:${index}`];
+                            const decision = resumeChangeDecisions[resumeDecisionKey(scope, change, index)]
+                              ?? resumeChangeDecisions[`${scope}:${index}`];
                             return (
                               <article className={`${decision ? `decision-${decision}` : ""} ${activeResumeChangeIndex === index ? "active-change" : ""}`} key={`${change.before}-${change.after}-${index}`}>
                                 <div className="review-change-title">

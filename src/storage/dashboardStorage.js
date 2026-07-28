@@ -3,18 +3,20 @@ import { hasCurrentJobScore, jobScoreAlgorithmVersion } from "../domain/jobDisco
 import { normalizeResumeRewriteConsent } from "../services/resumeRewriteConsent.js";
 import { withNormalizedSourceReceipt } from "../domain/sourceReceipt.js";
 
-export const dashboardStorageKey = "job-master-dashboard-v5";
-export const previousDashboardStorageKey = "job-master-dashboard-v4";
-export const legacyDashboardStorageKey = "job-master-dashboard-v3";
-export const oldestDashboardStorageKey = "job-master-dashboard-v2";
-export const oldestLegacyDashboardStorageKey = "job-master-dashboard-v1";
-export const dashboardSchemaVersion = 5;
+export const dashboardStorageKey = "job-master-dashboard-v6";
+export const previousDashboardStorageKey = "job-master-dashboard-v5";
+export const legacyDashboardStorageKey = "job-master-dashboard-v4";
+export const oldestDashboardStorageKey = "job-master-dashboard-v3";
+export const oldestLegacyDashboardStorageKey = "job-master-dashboard-v2";
+export const earliestDashboardStorageKey = "job-master-dashboard-v1";
+export const dashboardSchemaVersion = 6;
 export const dashboardStorageKeys = [
   dashboardStorageKey,
   previousDashboardStorageKey,
   legacyDashboardStorageKey,
   oldestDashboardStorageKey,
   oldestLegacyDashboardStorageKey,
+  earliestDashboardStorageKey,
 ];
 
 function normalizeApplications(applications) {
