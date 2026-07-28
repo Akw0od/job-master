@@ -13,6 +13,9 @@ const password = "safe backup password";
 const dashboard = {
   applications: [{
     id: "imported-receipt",
+    status: "已投递",
+    statusKey: "applied",
+    stage: "进行中",
     jdSource: "user-pasted",
     jdHash: "abc123",
     jdHashAlgorithm: "fnv-1a-32",
@@ -31,6 +34,25 @@ const dashboard = {
       jdHashAlgorithm: "fnv-1a-32",
     },
   }],
+  applicationEventsById: {
+    "imported-receipt": [{
+      schemaVersion: 1,
+      id: "status-1",
+      applicationId: "imported-receipt",
+      type: "status.changed",
+      occurredAt: "2026-07-24T00:00:00.000Z",
+      fromStatus: "收藏",
+      toStatus: "已投递",
+      metadata: { warningCodes: ["receipt-stale"] },
+    }, {
+      schemaVersion: 1,
+      id: "unsafe-event",
+      applicationId: "imported-receipt",
+      type: "application.opened",
+      occurredAt: "2026-07-24T00:01:00.000Z",
+      metadata: { email: "ada@example.com" },
+    }],
+  },
   resumeVersions: [{
     id: "master-resume",
     content: "Ada Lovelace\nada@example.com\nSensitive resume facts",
@@ -56,9 +78,17 @@ test("encrypted local dashboard backup round-trips without plaintext resume or p
   const restored = await decryptDashboardBackup(backup, password);
   assert.equal(restored.resumeVersions[0].content, dashboard.resumeVersions[0].content);
   assert.equal(restored.candidateProfile.email, "ada@example.com");
-  assert.deepEqual(restored.applications[0].sourceReceipt, dashboard.applications[0].sourceReceipt);
+  assert.equal(restored.applications[0].sourceReceipt.schemaVersion, 2);
+  assert.deepEqual(restored.applications[0].sourceReceipt.sourceArtifact, {
+    kind: "missing", sourceUrl: "", capturedAt: "", byteLength: 0, complete: false, contentHash: "", hashAlgorithm: "none",
+  });
+  assert.deepEqual(restored.applications[0].sourceReceipt.summaryArtifact, {
+    kind: "missing", generatedAt: "", contentHash: "", hashAlgorithm: "none",
+  });
   assert.deepEqual(restored.resumeVersions[1].patchAudit, dashboard.resumeVersions[1].patchAudit);
   assert.deepEqual(restored.resumeVersions[1].lineage, dashboard.resumeVersions[1].lineage);
+  assert.deepEqual(restored.applicationEventsById["imported-receipt"].map((event) => event.id), ["status-1"]);
+  assert.equal(JSON.stringify(restored.applicationEventsById).includes("ada@example.com"), false);
 });
 
 test("backup rejects wrong passwords, tampering, unsupported envelopes, and oversized files", async () => {

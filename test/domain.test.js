@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   analyzeJobForResume,
   applyLiveUrlVerificationResults,
+  buildRecommendationFunnel,
   filterDiscoverableJobs,
   getJobDiscoveryBatch,
   getLiveOfficialApplyUrls,
@@ -14,6 +15,7 @@ import {
   mergeJobPools,
   normalizeSearchedJobs,
   rankJobsForResume,
+  recommendationFunnelAlgorithmVersion,
 } from "../src/domain/jobDiscovery.js";
 import {
   buildImportedJob,
@@ -24,6 +26,7 @@ import {
   deriveOfficialJobProvider,
   derivePostingUrl,
   normalizeReceiptUrl,
+  updateSourceReceiptVerification,
   withNormalizedSourceReceipt,
 } from "../src/domain/sourceReceipt.js";
 import { jobPoolsByMarket } from "../src/data/jobCatalog.js";
@@ -32,6 +35,7 @@ import {
   dashboardStorageKey,
   clearKnownDashboards,
   legacyDashboardStorageKey,
+  migrateDashboard,
   oldestDashboardStorageKey,
   previousDashboardStorageKey,
   readDashboard,
@@ -95,6 +99,39 @@ test("resume ranking has no artificial minimum score and exposes confidence", ()
   assert.equal(analyzed.score, 0);
   assert.equal(analyzed.matchConfidence, "needs-review");
   assert.equal(analyzed.matchLabel, "待评估");
+});
+
+test("recommendation funnel is pure, stable, and reports every exclusion boundary", () => {
+  const jobs = [
+    { id: "top", company: "A", role: "AI Engineer", market: "美国", employmentType: "全职", stage: "进行中", summary: "agent evaluation", track: "ai_agent_engineer", evidence: ["Python"] },
+    { id: "same-score", company: "B", role: "AI Engineer", market: "美国", employmentType: "全职", stage: "进行中", summary: "agent evaluation", track: "ai_agent_engineer", evidence: ["Python"] },
+    { id: "zero", company: "C", role: "Unrelated", market: "美国", employmentType: "全职", stage: "进行中", summary: "", track: "unknown" },
+    { id: "terminal", company: "D", role: "AI Engineer", market: "美国", employmentType: "全职", stage: "进行中", status: "已投递", track: "ai_agent_engineer" },
+    { id: "closed", company: "E", role: "AI Engineer", market: "美国", employmentType: "全职", stage: "进行中", verificationStatus: "unavailable", track: "ai_agent_engineer" },
+    { id: "archived", company: "F", role: "AI Engineer", market: "美国", employmentType: "全职", stage: "已归档", track: "ai_agent_engineer" },
+    { id: "intern", company: "G", role: "AI Engineer", market: "美国", employmentType: "实习", stage: "进行中", track: "ai_agent_engineer" },
+    { id: "china", company: "H", role: "AI Engineer", market: "中国", employmentType: "全职", stage: "进行中", track: "ai_agent_engineer" },
+  ];
+  const original = structuredClone(jobs);
+  const funnel = buildRecommendationFunnel(jobs, {
+    market: "美国", employmentType: "全职", resumeText: "Python agent evaluation", targetRole: "AI Agent Engineer", cap: 1,
+  });
+  assert.deepEqual(funnel.rankedJobs.map((job) => job.id), ["top"]);
+  assert.deepEqual(funnel.counts, { input: 8, market: 7, employmentType: 6, active: 5, available: 4, scored: 3, relevant: 2, returned: 1 });
+  assert.deepEqual(funnel.exclusions, { market: 1, employmentType: 1, archived: 1, unavailable: 1, terminal: 1, zeroScore: 1, cap: 1 });
+  assert.deepEqual(funnel.relevantIds, ["top", "same-score"]);
+  assert.equal(funnel.relevantIds.filter((id) => !["stale-seen-id"].includes(id)).length, 2);
+  const sanitizedOptions = buildRecommendationFunnel(jobs, {
+    market: "美国",
+    employmentType: "全职",
+    resumeText: "Python agent evaluation",
+    targetRole: "AI Agent Engineer",
+    cap: Number.NaN,
+    cycle: Number.POSITIVE_INFINITY,
+    seenIds: {},
+  });
+  assert.deepEqual(sanitizedOptions.rankedJobs.map((job) => job.id), ["top", "same-score"]);
+  assert.deepEqual(jobs, original);
 });
 
 test("signal matcher rejects ASCII substrings while accepting independent and normalized technical terms", () => {
@@ -295,8 +332,11 @@ test("manual JD jobs preserve the complete source and reject generic career URLs
   assert.equal(job.jdComplete, true);
   assert.equal(job.jdHashAlgorithm, "fnv-1a-32");
   assert.equal(job.sourceReceipt.origin, "user-pasted");
-  assert.equal(job.sourceReceipt.jdHash, job.jdHash);
-  assert.equal(job.sourceReceipt.jdHashAlgorithm, "fnv-1a-32");
+  assert.equal(job.sourceReceipt.sourceArtifact.kind, "user-provided-jd");
+  assert.equal(job.sourceReceipt.sourceArtifact.contentHash, job.jdHash);
+  assert.equal(job.sourceReceipt.sourceArtifact.hashAlgorithm, "fnv-1a-32");
+  assert.equal(job.sourceReceipt.sourceArtifact.complete, true);
+  assert.equal(job.sourceReceipt.summaryArtifact.kind, "missing");
   assert.equal(job.sourceReceipt.verificationState, "needs-review");
   assert.equal(isSpecificApplicationUrl("https://example.com/careers"), false);
   assert.equal(isSpecificApplicationUrl("https://example.com/jobs/123"), true);
@@ -357,8 +397,8 @@ test("static and legacy jobs migrate to truthful source receipts without inventi
   assert.equal(catalogReceipt.verificationState, "needs-review");
   assert.equal(catalogReceipt.fetchedAt, "");
   assert.equal(catalogReceipt.verifiedAt, "");
-  assert.equal(catalogReceipt.jdHash, "");
-  assert.equal(catalogReceipt.jdHashAlgorithm, "none");
+  assert.equal(catalogReceipt.sourceArtifact.complete, false);
+  assert.equal(catalogReceipt.summaryArtifact.kind, "missing");
 
   const builtInPools = mergeJobPools(jobPoolsByMarket);
   assert.equal(builtInPools.美国[0].sourceReceipt.origin, "built-in-catalog");
@@ -381,8 +421,10 @@ test("static and legacy jobs migrate to truthful source receipts without inventi
   assert.equal(legacyReceipt.verificationState, "needs-review");
   assert.equal(legacyReceipt.fetchedAt, "");
   assert.equal(legacyReceipt.verifiedAt, "");
-  assert.equal(legacyReceipt.jdHash, "deadbeef");
-  assert.equal(legacyReceipt.jdHashAlgorithm, "legacy-unknown");
+  assert.equal(legacyReceipt.sourceArtifact.complete, false);
+  assert.deepEqual(legacyReceipt.summaryArtifact, {
+      kind: "legacy-agent-paraphrase", generatedAt: "", contentHash: "deadbeef", hashAlgorithm: "legacy-unknown",
+  });
 });
 
 test("source receipts reject unsafe URLs and derive posting URLs only for known ATS application suffixes", () => {
@@ -413,6 +455,66 @@ test("source receipts reject unsafe URLs and derive posting URLs only for known 
   assert.equal(receipt.verifiedAt, "");
 });
 
+test("source receipt v2 keeps official snapshots and generated summaries independently auditable", () => {
+  const snapshotHash = "a".repeat(64);
+  const summaryHash = "b".repeat(64);
+  const snapshot = {
+    kind: "official-response", sourceUrl: "https://example.com/jobs/123", capturedAt: "2026-07-28T00:00:00.000Z", byteLength: 321, complete: true,
+    contentHash: snapshotHash, hashAlgorithm: "sha-256",
+  };
+  const base = {
+    sourceReceipt: {
+      schemaVersion: 2, origin: "live-official-search", applyUrl: snapshot.sourceUrl, postingUrl: snapshot.sourceUrl,
+      fetchedAt: snapshot.capturedAt, verificationState: "open", verifiedAt: snapshot.capturedAt,
+      verificationReason: "url-open", sourceArtifact: snapshot,
+      summaryArtifact: { kind: "agent-paraphrase", generatedAt: snapshot.capturedAt, contentHash: summaryHash, hashAlgorithm: "sha-256" },
+    },
+  };
+  const alternateSummary = withNormalizedSourceReceipt({ ...base, sourceReceipt: {
+    ...base.sourceReceipt, summaryArtifact: { ...base.sourceReceipt.summaryArtifact, contentHash: "c".repeat(64) },
+  } }).sourceReceipt;
+  const alternateSnapshot = withNormalizedSourceReceipt({ ...base, sourceReceipt: {
+    ...base.sourceReceipt, sourceArtifact: { ...snapshot, contentHash: "d".repeat(64), capturedAt: "2026-07-28T01:00:00.000Z" },
+  } }).sourceReceipt;
+  assert.equal(alternateSummary.sourceArtifact.contentHash, snapshotHash);
+  assert.equal(alternateSummary.summaryArtifact.contentHash, "c".repeat(64));
+  assert.equal(alternateSnapshot.sourceArtifact.contentHash, "d".repeat(64));
+  assert.equal(alternateSnapshot.summaryArtifact.contentHash, summaryHash);
+
+  const preserved = updateSourceReceiptVerification({ ...base, sourceReceipt: base.sourceReceipt }, {
+    state: "unknown", checkedAt: "2026-07-28T02:00:00.000Z", reason: "bounded-response",
+  });
+  assert.equal(preserved.sourceArtifact.contentHash, snapshotHash);
+  assert.equal(preserved.summaryArtifact.contentHash, summaryHash);
+  const replaced = updateSourceReceiptVerification({ ...base, sourceReceipt: base.sourceReceipt }, {
+    state: "open", checkedAt: "2026-07-28T03:00:00.000Z", reason: "url-open",
+    sourceArtifact: { ...snapshot, capturedAt: "2026-07-28T03:00:00.000Z", contentHash: "e".repeat(64) },
+  });
+  assert.equal(replaced.sourceArtifact.contentHash, "e".repeat(64));
+  assert.equal(replaced.summaryArtifact.contentHash, summaryHash);
+});
+
+test("source receipt artifacts fail closed for malformed hashes, empty captures, and missing required times", () => {
+  const receipt = withNormalizedSourceReceipt({
+    sourceReceipt: {
+      schemaVersion: 2, origin: "live-official-search", applyUrl: "https://example.com/jobs/123",
+      sourceArtifact: { kind: "official-response", sourceUrl: "https://example.com/jobs/123", capturedAt: "not-a-time", byteLength: 0, complete: true, contentHash: "short", hashAlgorithm: "sha-256" },
+      summaryArtifact: { kind: "agent-paraphrase", generatedAt: "", contentHash: "a".repeat(64), hashAlgorithm: "sha-256" },
+    },
+  }).sourceReceipt;
+  assert.equal(receipt.sourceArtifact.kind, "missing");
+  assert.equal(receipt.summaryArtifact.kind, "missing");
+
+  const oversizedLegacy = withNormalizedSourceReceipt({
+    sourceReceipt: { origin: "legacy-cache", jdHash: "x".repeat(129), jdHashAlgorithm: "legacy-unknown" },
+  }).sourceReceipt;
+  assert.equal(oversizedLegacy.summaryArtifact.kind, "missing");
+  const validManual = withNormalizedSourceReceipt({
+    jdSource: "user-pasted", jdText: "JD text", jdHash: "deadbeef", jdHashAlgorithm: "fnv-1a-32",
+  }).sourceReceipt;
+  assert.equal(validManual.sourceArtifact.kind, "user-provided-jd");
+});
+
 test("URL checks retain live source evidence while a closed tracked job leaves discovery", () => {
   const receipt = {
     schemaVersion: 1,
@@ -425,7 +527,7 @@ test("URL checks retain live source evidence while a closed tracked job leaves d
     verificationState: "open",
     verifiedAt: "2026-07-24T00:00:00.000Z",
     verificationReason: "live-search-verified",
-    jdHash: "abc123",
+    jdHash: "a".repeat(64),
     jdHashAlgorithm: "sha-256",
   };
   const job = {
@@ -442,7 +544,7 @@ test("URL checks retain live source evidence while a closed tracked job leaves d
   assert.equal(closed.sourceReceipt.verificationState, "closed");
   assert.equal(closed.sourceReceipt.verifiedAt, "2026-07-26T00:00:00.000Z");
   assert.equal(closed.sourceReceipt.fetchedAt, receipt.fetchedAt);
-  assert.equal(closed.sourceReceipt.jdHash, receipt.jdHash);
+  assert.equal(closed.sourceReceipt.summaryArtifact.contentHash, receipt.jdHash);
   assert.deepEqual(filterDiscoverableJobs([closed], "美国", "全职"), []);
 
   const open = applyLiveUrlVerificationResults([job], [{
@@ -477,8 +579,36 @@ test("dashboard storage migrates legacy tracking and writes a schema version", (
   assert.equal(migrated.schemaVersion, dashboardSchemaVersion);
   assert.equal(migrated.applications[0].userTracked, false);
   assert.equal(migrated.applications[1].userTracked, true);
+  assert.deepEqual(migrated.applicationEventsById, {});
   writeDashboard(migrated, storage);
   assert.equal(JSON.parse(values.get(dashboardStorageKey)).schemaVersion, dashboardSchemaVersion);
+});
+
+test("dashboard migration preserves only valid bounded application events without fabricating legacy history", () => {
+  const validEvent = {
+    schemaVersion: 1,
+    id: "event-1",
+    applicationId: "tracked",
+    type: "status.changed",
+    occurredAt: "2026-07-28T00:00:00.000Z",
+    fromStatus: "收藏",
+    toStatus: "已投递",
+  };
+  const migrated = migrateDashboard({
+    applications: [{ id: "tracked", status: "已投递", stage: "进行中", userTracked: true }],
+    applicationEventsById: {
+      tracked: [validEvent, {
+        ...validEvent,
+        id: "unsafe",
+        type: "application.opened",
+        metadata: { email: "private@example.com" },
+      }],
+    },
+  });
+
+  assert.deepEqual(migrated.applicationEventsById.tracked.map((event) => event.id), ["event-1"]);
+  assert.equal(JSON.stringify(migrated.applicationEventsById).includes("private@example.com"), false);
+  assert.deepEqual(migrateDashboard({ schemaVersion: 6, applications: [] }).applicationEventsById, {});
 });
 
 test("dashboard storage migrates the previous v5 key and normalizes paper size", () => {
@@ -506,9 +636,40 @@ test("dashboard storage migrates v5 resume lineage without fabricating or droppi
   ]);
   const storage = { getItem: (key) => values.get(key) ?? null };
   const migrated = readDashboard(storage);
-  assert.equal(migrated.schemaVersion, 6);
+  assert.equal(migrated.schemaVersion, 7);
   assert.deepEqual(migrated.resumeVersions[0].patchAudit, patchAudit);
   assert.equal(migrated.resumeVersions[0].parentVersionId, "master-resume");
+});
+
+test("dashboard persists only bounded funnel aggregates and rejects malformed funnel metadata", () => {
+  const counts = { input: 9, market: 7, employmentType: 6, active: 5, available: 4, scored: 3, relevant: 2, returned: 2 };
+  const exclusions = { market: 2, employmentType: 1, archived: 1, unavailable: 1, terminal: 1, zeroScore: 1, cap: 0 };
+  const valid = migrateDashboard({ recommendationMeta: {
+    jobScoreAlgorithmVersion, recommendationFunnelAlgorithmVersion,
+    source: "Master Resume.pdf",
+    targetRole: "AI Agent Engineer",
+    signals: ["agent", "evaluation"],
+    funnel: { algorithmVersion: recommendationFunnelAlgorithmVersion, counts, exclusions, rankedJobs: [{ jdText: "must not persist" }] },
+    jobs: [{ jdText: "must not persist outside the funnel either" }],
+  } });
+  assert.deepEqual(valid.recommendationMeta.funnel, { algorithmVersion: recommendationFunnelAlgorithmVersion, counts, exclusions });
+  assert.equal(JSON.stringify(valid.recommendationMeta).includes("must not persist"), false);
+  assert.deepEqual(valid.recommendationMeta.signals, ["agent", "evaluation"]);
+  const malformed = migrateDashboard({ recommendationMeta: {
+    jobScoreAlgorithmVersion, recommendationFunnelAlgorithmVersion,
+    funnel: { algorithmVersion: recommendationFunnelAlgorithmVersion, counts: { ...counts, input: -1 }, exclusions },
+  } });
+  assert.equal(malformed.recommendationMeta, null);
+  const nonMonotonic = migrateDashboard({ recommendationMeta: {
+    jobScoreAlgorithmVersion, recommendationFunnelAlgorithmVersion,
+    funnel: { algorithmVersion: recommendationFunnelAlgorithmVersion, counts: { ...counts, market: counts.input + 1 }, exclusions },
+  } });
+  assert.equal(nonMonotonic.recommendationMeta, null);
+  const unreconciled = migrateDashboard({ recommendationMeta: {
+    jobScoreAlgorithmVersion, recommendationFunnelAlgorithmVersion,
+    funnel: { algorithmVersion: recommendationFunnelAlgorithmVersion, counts, exclusions: { ...exclusions, cap: exclusions.cap + 1 } },
+  } });
+  assert.equal(unreconciled.recommendationMeta, null);
 });
 
 test("dashboard storage invalidates old and malformed current score payloads", () => {

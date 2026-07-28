@@ -18,6 +18,9 @@ export function ApplicationAssistModal({
   contactValidation,
   previousAudit,
   sourceChanged,
+  preflight,
+  acknowledgements,
+  onAcknowledgementsChange,
   isLaunching,
   onCopyFields,
   onClose,
@@ -47,6 +50,34 @@ export function ApplicationAssistModal({
       return `${t("当前岗位版简历")} · ${source.slice("Resume · ".length)}`;
     }
     return t("申请辅助中的浏览器本地档案");
+  }
+
+  function preflightLabel(code, passed = false) {
+    const labels = {
+      "specific-https-application-url": ["具体 HTTPS 申请链接有效", "缺少具体 HTTPS 申请链接", "Specific HTTPS application URL is valid", "A specific HTTPS application URL is required"],
+      "job-available": ["岗位仍可申请", "岗位已关闭或不可申请", "Job is still available", "Job is closed or unavailable"],
+      "receipt-apply-url-match": ["来源凭据与申请链接一致", "来源凭据与申请链接不一致", "Receipt matches the application URL", "Receipt does not match the application URL"],
+      "provider-id-consistent": ["职位提供方与岗位 ID 一致", "职位提供方或岗位 ID 冲突", "Provider and job ID are consistent", "Provider or job ID conflicts"],
+      "saved-job-derived-resume": ["已保存对应岗位版简历", "需要保存对应岗位版简历", "Matching job-derived resume is saved", "Save a matching job-derived resume"],
+      "resume-changes-saved": ["简历修改已保存", "仍有未保存的简历修改", "Resume edits are saved", "Resume edits are still unsaved"],
+      "valid-contact": ["姓名和邮箱格式有效", "姓名或邮箱缺失/无效", "Name and email are valid", "Name or email is missing or invalid"],
+      "contact-authorized": ["已授权非空联系方式字段", "需要授权非空联系方式字段", "Non-empty contact fields are authorized", "Authorize non-empty contact fields"],
+      "truth-acknowledged": ["已确认仅使用真实信息", "请确认仅使用真实信息", "Truth acknowledgement is complete", "Confirm that only truthful information will be used"],
+      "sensitive-acknowledged": ["已确认敏感字段边界", "请确认敏感字段边界", "Sensitive-field boundary is acknowledged", "Acknowledge the sensitive-field boundary"],
+      "unknown-questions-acknowledged": ["未知问题将由本人填写", "请确认未知问题由本人填写", "Unknown questions stay manual", "Confirm that you will answer unknown questions"],
+      "duplicate-application": ["未发现阻断性重复投递", "发现可能重复投递，需要明确覆盖", "No blocking duplicate was found", "Possible duplicate application requires an explicit override"],
+      "duplicate-override": ["未启用重复投递覆盖", "已启用重复投递覆盖，请人工复核", "Duplicate override is not in use", "Duplicate override is enabled; review carefully"],
+      "receipt-needs-review": ["来源凭据无需额外复核", "来源凭据需要人工复核", "Source receipt needs no extra review", "Source receipt needs manual review"],
+      "receipt-stale": ["来源凭据在 24 小时内核验", "来源凭据过期、未核验或时间异常", "Source receipt was verified within 24 hours", "Source receipt is stale, unverified, or has an invalid time"],
+      "provider-id-missing": ["职位提供方 ID 可用", "职位提供方 ID 缺失", "Provider job ID is available", "Provider job ID is missing"],
+      "sensitive-lines-excluded": ["字段包未发现疑似敏感行", "字段包排除了疑似敏感行，请人工复核", "No sensitive-looking lines were found", "Sensitive-looking lines were excluded; review manually"],
+      "packet-sections-unavailable": ["申请字段包章节可用", "部分申请字段包章节不可用", "Application packet sections are available", "Some application packet sections are unavailable"],
+      "warnings-acknowledgement-required": ["已确认所有人工复核警告", "需确认所有人工复核警告", "All review warnings are acknowledged", "Acknowledge all review warnings"],
+    };
+    const label = labels[code];
+    if (!label) return uiLanguage === "en" ? "Additional local safety check" : "额外本地安全检查";
+    if (uiLanguage === "en") return passed ? label[2] : label[3];
+    return passed ? label[0] : label[1];
   }
 
   return (
@@ -127,6 +158,24 @@ export function ApplicationAssistModal({
           </button>
           <p role="status" aria-live="polite">{copyStatus}</p>
         </div>
+
+        <fieldset className="consent-list">
+          <legend>{t("申请前检查")}</legend>
+          {(preflight?.checks ?? []).filter((check) => check.severity !== "invariant").map((check) => (
+            <p key={check.code} className={check.passed ? "assist-check-passed" : check.severity === "blocking" ? "assist-contact-error" : "assist-field-exclusion"}>
+              {check.passed ? "✓" : "!"} {preflightLabel(check.code, check.passed)}
+            </p>
+          ))}
+          {preflight?.blocking?.includes("warnings-acknowledgement-required") && <p className="assist-contact-error">! {preflightLabel("warnings-acknowledgement-required", false)}</p>}
+          {["truth", "sensitive", "unknownQuestions"].map((key) => (
+            <label key={key} className="assist-job-confirmation">
+              <input type="checkbox" disabled={isLaunching} checked={Boolean(acknowledgements?.[key])} onChange={(event) => onAcknowledgementsChange({ ...acknowledgements, [key]: event.target.checked })} />
+              <span>{t(key === "truth" ? "我确认仅使用真实、已核对的信息。" : key === "sensitive" ? "我确认敏感或受保护字段不会被自动填写。" : "我确认未知问题将由我本人在官网填写。")}</span>
+            </label>
+          ))}
+          {preflight?.warnings?.length > 0 && <label className="assist-job-confirmation"><input type="checkbox" disabled={isLaunching} checked={Boolean(acknowledgements?.warnings)} onChange={(event) => onAcknowledgementsChange({ ...acknowledgements, warnings: event.target.checked })} /><span>{t("我已阅读并接受以上需要人工复核的警告。")}</span></label>}
+          {(preflight?.blocking?.includes("duplicate-application") || preflight?.warnings?.includes("duplicate-override") || acknowledgements?.duplicate) && <label className="assist-job-confirmation"><input type="checkbox" disabled={isLaunching} checked={Boolean(acknowledgements?.duplicate)} onChange={(event) => onAcknowledgementsChange({ ...acknowledgements, duplicate: event.target.checked })} /><span>{t("我确认仍要打开这个可能重复的申请记录。")}</span></label>}
+        </fieldset>
 
         <label className="assist-job-confirmation">
           <input type="checkbox" disabled={isLaunching} checked={isConfirmed} onChange={(event) => onConfirmationChange(event.target.checked)} />

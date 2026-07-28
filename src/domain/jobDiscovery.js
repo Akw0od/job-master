@@ -21,6 +21,9 @@ const accentOptions = ["ink", "blue", "violet", "slate", "mono"];
 const terminalDiscoveryStatuses = new Set(["已投递", "面试", "Offer", "未通过"]);
 const liveVerificationMaxAgeMs = 24 * 60 * 60 * 1000;
 export const jobScoreAlgorithmVersion = 2;
+export const recommendationFunnelAlgorithmVersion = 1;
+const funnelCountKeys = ["input", "market", "employmentType", "active", "available", "scored", "relevant", "returned"];
+const funnelExclusionKeys = ["market", "employmentType", "archived", "unavailable", "terminal", "zeroScore", "cap"];
 const scoreBreakdownKeys = ["targetDirection", "resumeKeywords", "confirmedEvidence", "customDirection"];
 const trackTieBreakOrder = ["sde", "product_engineer", "data_platform", "risk_engineer", "fde", "ai_agent_engineer"];
 
@@ -166,6 +169,119 @@ export function rankJobsForResume(jobs, resumeText, targetRole, customDirections
   return jobs
     .map((job) => analyzeJobForResume(job, resumeText, targetRole, customDirections))
     .sort((a, b) => b.score - a.score || a.company.localeCompare(b.company));
+}
+
+export function buildRecommendationFunnel(jobs, {
+  market,
+  employmentType,
+  resumeText,
+  targetRole,
+  customDirections = [],
+  cap = 6,
+  seenIds = [],
+  cycle = 0,
+} = {}) {
+  const input = Array.isArray(jobs) ? jobs : [];
+  const exclusions = { market: 0, employmentType: 0, archived: 0, unavailable: 0, terminal: 0, zeroScore: 0, cap: 0 };
+  const marketMatches = input.filter((job) => {
+    const keep = job?.market === market;
+    if (!keep) exclusions.market += 1;
+    return keep;
+  });
+  const typeMatches = marketMatches.filter((job) => {
+    const keep = (job?.employmentType ?? "全职") === employmentType;
+    if (!keep) exclusions.employmentType += 1;
+    return keep;
+  });
+  const active = typeMatches.filter((job) => {
+    const keep = job?.stage !== "已归档";
+    if (!keep) exclusions.archived += 1;
+    return keep;
+  });
+  const available = active.filter((job) => {
+    const keep = job?.verificationStatus !== "unavailable";
+    if (!keep) exclusions.unavailable += 1;
+    return keep;
+  });
+  const discoverable = available.filter((job) => {
+    const keep = !terminalDiscoveryStatuses.has(job?.status);
+    if (!keep) exclusions.terminal += 1;
+    return keep;
+  });
+  const scored = discoverable
+    .map((job, index) => ({ job: analyzeJobForResume(job, resumeText, targetRole, customDirections), index }))
+    .sort((left, right) => right.job.score - left.job.score
+      || String(left.job.company ?? "").localeCompare(String(right.job.company ?? ""))
+      || left.index - right.index);
+  const relevant = scored.filter(({ job }) => {
+    const keep = job.score > 0;
+    if (!keep) exclusions.zeroScore += 1;
+    return keep;
+  }).map(({ job }) => job);
+  const seen = new Set(Array.isArray(seenIds) ? seenIds : []);
+  const unseen = relevant.filter((job) => !seen.has(job.id));
+  const alreadySeen = relevant.filter((job) => seen.has(job.id));
+  const limit = Math.max(0, Number.isFinite(cap) ? Math.floor(cap) : 6);
+  const normalizedCycle = Number.isSafeInteger(cycle) && cycle >= 0 ? cycle : 0;
+  const step = Math.max(2, Math.floor(Math.max(1, limit) / 2));
+  const start = alreadySeen.length ? (normalizedCycle * step) % alreadySeen.length : 0;
+  const rotatedSeen = alreadySeen.length
+    ? Array.from({ length: alreadySeen.length }, (_, index) => alreadySeen[(start + index) % alreadySeen.length])
+    : [];
+  const ordered = [...unseen, ...rotatedSeen];
+  const rankedJobs = ordered.slice(0, limit);
+  exclusions.cap = Math.max(0, ordered.length - rankedJobs.length);
+  return {
+    rankedJobs,
+    relevantIds: relevant.map((job) => job.id).filter(Boolean),
+    algorithmVersion: recommendationFunnelAlgorithmVersion,
+    counts: {
+      input: input.length,
+      market: marketMatches.length,
+      employmentType: typeMatches.length,
+      active: active.length,
+      available: available.length,
+      scored: scored.length,
+      relevant: relevant.length,
+      returned: rankedJobs.length,
+    },
+    exclusions,
+  };
+}
+
+export function normalizeRecommendationFunnelMeta(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || value.algorithmVersion !== recommendationFunnelAlgorithmVersion) return null;
+  const normalizeMap = (source, keys) => {
+    if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+    const result = {};
+    for (const key of keys) {
+      const number = source[key];
+      if (!Number.isSafeInteger(number) || number < 0 || number > 1_000_000) return null;
+      result[key] = number;
+    }
+    return result;
+  };
+  const counts = normalizeMap(value.counts, funnelCountKeys);
+  const exclusions = normalizeMap(value.exclusions, funnelExclusionKeys);
+  if (!counts || !exclusions) return null;
+  const monotonic = counts.input >= counts.market
+    && counts.market >= counts.employmentType
+    && counts.employmentType >= counts.active
+    && counts.active >= counts.available
+    && counts.available >= counts.scored
+    && counts.scored >= counts.relevant
+    && counts.relevant >= counts.returned;
+  const reconciled = exclusions.market === counts.input - counts.market
+    && exclusions.employmentType === counts.market - counts.employmentType
+    && exclusions.archived === counts.employmentType - counts.active
+    && exclusions.unavailable === counts.active - counts.available
+    && exclusions.terminal === counts.available - counts.scored
+    && exclusions.zeroScore === counts.scored - counts.relevant
+    && exclusions.cap === counts.relevant - counts.returned;
+  return monotonic && reconciled
+    ? { algorithmVersion: recommendationFunnelAlgorithmVersion, counts, exclusions }
+    : null;
 }
 
 export function normalizeSearchedJobs(searchResult, market, employmentType) {

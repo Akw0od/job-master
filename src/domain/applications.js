@@ -143,8 +143,11 @@ export function buildImportedJob({
       verificationState: normalizedUrl ? "needs-review" : "manual",
       verifiedAt: "",
       verificationReason: normalizedUrl ? "manual-jd-needs-review" : "manual-jd-no-application-url",
-      jdHash,
-      jdHashAlgorithm: "fnv-1a-32",
+      sourceArtifact: {
+        kind: "user-provided-jd", sourceUrl: "", capturedAt: "", byteLength: new TextEncoder().encode(normalizedJd).byteLength,
+        complete: true, contentHash: jdHash, hashAlgorithm: "fnv-1a-32",
+      },
+      summaryArtifact: { kind: "missing", generatedAt: "", contentHash: "", hashAlgorithm: "none" },
     },
   };
 }

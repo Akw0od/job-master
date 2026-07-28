@@ -43,21 +43,31 @@ import {
   normalizeApplicationStatus,
 } from "./domain/applications";
 import {
+  appendApplicationOpened,
+  appendPreflightPassed,
+  getApplicationEvents,
+  getApplicationStatusRevertibility,
+  normalizeApplicationEventState,
+  revertLatestApplicationStatusChange,
+  transitionApplicationStatus,
+} from "./domain/applicationEvents";
+import { evaluateApplicationPreflight, hasFreshOpenSourceReceipt } from "./domain/applicationPreflight";
+import {
   analyzeJobForResume,
   applyLiveUrlVerificationResults,
+  buildRecommendationFunnel,
   filterDiscoverableJobs,
   formatSignalScore,
   getDiscoveryKey,
-  getJobDiscoveryBatch,
   getLiveOfficialApplyUrls,
   inferJobTrack,
-  isLiveOfficialVerificationStale,
   hasCurrentJobScore,
   jobScoreAlgorithmVersion,
   markRejectedLiveJobs,
   mergeJobPools,
+  normalizeRecommendationFunnelMeta,
   normalizeSearchedJobs,
-  rankJobsForResume,
+  recommendationFunnelAlgorithmVersion,
 } from "./domain/jobDiscovery";
 import { translateUiText } from "./i18n";
 import { extractResumeDocument } from "./resume/resumeIO";
@@ -91,7 +101,7 @@ import {
   hasApplicationAssistSourceChanged,
   validateApplicationContact,
 } from "./services/applicationFieldPacket";
-import { deriveOfficialJobProvider, derivePostingUrl, normalizeReceiptUrl } from "./domain/sourceReceipt";
+import { deriveOfficialJobProvider, derivePostingUrl, normalizeReceiptUrl, updateSourceReceiptVerification } from "./domain/sourceReceipt";
 import { getNextTabKey } from "./services/tabNavigation";
 import { clearKnownDashboards, readDashboard, writeDashboard } from "./storage/dashboardStorage";
 import {
@@ -109,7 +119,7 @@ const tabs = ["岗位匹配", "定制简历", "追踪"];
 
 function verificationStatusCopy(job) {
   if (job?.verificationStatus === "unavailable") return "官网确认岗位已失效";
-  if (job?.verificationStatus === "verified" && isLiveOfficialVerificationStale(job)) return "核验已过期";
+  if (job?.verificationStatus === "verified" && !hasFreshOpenSourceReceipt(job)) return "核验已过期";
   if (job?.verificationStatus === "verified") return "链接已核验";
   return "待重新核验";
 }
@@ -142,15 +152,29 @@ const receiptValueLabels = {
   "manual-jd-needs-review": "用户粘贴 JD，链接待核验",
   "manual-jd-no-application-url": "用户未提供具体申请链接",
   "legacy-cache-needs-review": "旧缓存，来源详情待重新核验",
+  "official-response": "官网响应快照",
+  "user-provided-jd": "用户提供 JD 原文",
+  "agent-paraphrase": "Agent 生成的 JD 释义",
+  "legacy-agent-paraphrase": "旧记录 JD 释义证据",
+  missing: "未提供",
   none: "未提供",
   "legacy-unknown": "旧记录未标明算法",
+};
+const funnelExclusionLabels = {
+  market: "市场不匹配",
+  employmentType: "岗位类型不匹配",
+  archived: "已归档",
+  unavailable: "官网确认失效",
+  terminal: "已进入终态",
+  zeroScore: "无匹配证据",
+  cap: "展示上限",
 };
 
 function sourceReceiptValue(value, t) {
   const normalized = String(value ?? "").trim();
   if (!normalized) return t("未提供");
   const label = receiptValueLabels[normalized];
-  return label ? `${t(label)} (${normalized})` : normalized;
+  return label ? t(label) : normalized;
 }
 
 function formatReceiptTimestamp(value, uiLanguage, t) {
@@ -164,14 +188,20 @@ function resumeDecisionKey(scope, change, index) {
   return `${scope}:${change?.patchId ?? index}`;
 }
 
-function formatReceiptHash(receipt, t) {
-  if (!receipt?.jdHash) return t("未提供");
-  return `${receipt.jdHash} · ${sourceReceiptValue(receipt.jdHashAlgorithm, t)}`;
+function formatReceiptHash(artifact, t) {
+  if (!artifact?.contentHash) return t("未提供");
+  return `${artifact.contentHash} · ${sourceReceiptValue(artifact.hashAlgorithm, t)}`;
 }
 
 function getSuggestionScope(suggestion) {
   if (!suggestion) return "suggestion:none";
   return `suggestion:${suggestion.id ?? [suggestion.sourceVersionId, suggestion.suggestedTarget, suggestion.jobId].filter(Boolean).join(":")}`;
+}
+
+function primaryFunnelExclusion(funnel) {
+  const [reason, count] = Object.entries(funnel?.exclusions ?? {}).filter(([key]) => key !== "cap")
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0] ?? [];
+  return count > 0 ? { reason, count } : null;
 }
 
 const resumeTemplates = [
@@ -269,7 +299,20 @@ export function App() {
   const hasInitializedScoreRefreshRef = useRef(false);
   const [profileReady, setProfileReady] = useState(() => savedDashboard.profileReady ?? false);
   const [selectedDirection, setSelectedDirection] = useState(() => savedDashboard.selectedDirection ?? null);
-  const [applications, setApplications] = useState(() => savedDashboard.applications ?? []);
+  const [applicationState, setApplicationState] = useState(() => normalizeApplicationEventState({
+    applications: savedDashboard.applications ?? [],
+    applicationEventsById: savedDashboard.applicationEventsById ?? {},
+  }));
+  const applications = applicationState.applications;
+  const applicationEventsById = applicationState.applicationEventsById;
+  // Non-status callers retain their simple array updater, while status transitions use
+  // the event reducer below so UI, persistence, and audit history change together.
+  const setApplications = useCallback((updater) => {
+    setApplicationState((current) => ({
+      ...current,
+      applications: typeof updater === "function" ? updater(current.applications) : updater,
+    }));
+  }, []);
   const [selectedId, setSelectedId] = useState(() => savedDashboard.selectedId ?? null);
   const [step, setStep] = useState(() => {
     if (savedDashboard.step === "review" && savedDashboard.selectedId) return "review";
@@ -366,6 +409,9 @@ export function App() {
     experience: false,
   });
   const [isApplicationAssistConfirmed, setIsApplicationAssistConfirmed] = useState(false);
+  const [applicationAssistAcknowledgements, setApplicationAssistAcknowledgements] = useState({
+    truth: false, sensitive: false, unknownQuestions: false, warnings: false, duplicate: false,
+  });
   const [applicationAssists, setApplicationAssists] = useState(() => savedDashboard.applicationAssists ?? {});
   const [isApplicationAssistOpen, setIsApplicationAssistOpen] = useState(false);
   const [isApplicationAssistLaunching, setIsApplicationAssistLaunching] = useState(false);
@@ -568,6 +614,33 @@ export function App() {
     isConfirmed: isApplicationAssistConfirmed,
     isLaunching: isApplicationAssistLaunching,
   });
+  const hasUnsavedSelectedJobResumeChanges = Boolean(
+    (isResumeEditing && activeResumeVersionId === selectedJobResumeVersion?.id)
+    || activeJobSuggestion
+    || isAgentThinking
+    || (pendingResumeRewrite?.job?.id && pendingResumeRewrite.job.id === selected?.id),
+  );
+  const applicationPreflight = selected ? evaluateApplicationPreflight({
+    applicationId: selected.id,
+    job: selected,
+    applicationUrl: selected.applyUrl || (selected.source === "手动 JD" ? selected.url : ""),
+    resumeVersion: selectedJobResumeVersion,
+    resumeVersions,
+    hasUnsavedResumeChanges: hasUnsavedSelectedJobResumeChanges,
+    contact: candidateProfile,
+    contactValid: applicationContactValidation.ready,
+    authorizedGroups: Object.entries(applicationAssistAuthorization).filter(([, allowed]) => allowed).map(([group]) => group),
+    authorizedFieldCount: applicationFieldPacket.groups.filter((group) => applicationAssistAuthorization[group.id]).flatMap((group) => group.fields).length,
+    contactAuthorized: applicationAssistAuthorization.contact === true,
+    acknowledgements: applicationAssistAcknowledgements,
+    applications,
+    applicationEventsById,
+    sensitiveLinesExcluded: applicationFieldPacket.groups.reduce((count, group) => count + (group.excludedLineCount ?? 0), 0),
+    packetSectionsAvailable: applicationFieldPacket.groups.every((group) => group.fields.length > 0),
+  }) : null;
+  const selectedApplicationEvents = selected ? getApplicationEvents(applicationState, selected.id) : [];
+  const selectedStatusRevertibility = selected ? getApplicationStatusRevertibility(applicationState, selected.id) : { canRevert: false };
+  const selectedNormalizedStatus = selected ? normalizeApplicationStatus(selected.status) : "";
 
   const buildDashboardSnapshot = useCallback(() => (
     {
@@ -575,6 +648,7 @@ export function App() {
       profileReady,
       selectedDirection,
       applications,
+      applicationEventsById,
       selectedId,
       step,
       reviewStatus,
@@ -602,7 +676,7 @@ export function App() {
     }
   ), [
     activeResumeTab, activeResumeVersionId, agentSuggestion, applicationAssists,
-    applications, candidateProfile, customDirections,
+    applicationEventsById, applications, candidateProfile, customDirections,
     discoveryCycles, employmentType, liveJobsByDiscoveryKey, notesByJobId,
     outputLanguage, profileReady, recommendationMeta, resumeChangeDecisions,
     resumeFile, resumePageSize, resumeRewriteConsent, resumeVersions, reviewDrafts, reviewStatus,
@@ -733,6 +807,7 @@ export function App() {
     remainingCount = 0,
     role = targetRole,
     discoveryMode = "local",
+    funnel = null,
   ) {
     const signals = [...new Set(rankedJobs.flatMap((job) => job.matchSignals ?? []))].slice(0, 6);
     setRecommendationMeta({
@@ -747,6 +822,8 @@ export function App() {
       remainingCount,
       discoveryMode,
       jobScoreAlgorithmVersion,
+      recommendationFunnelAlgorithmVersion,
+      funnel: normalizeRecommendationFunnelMeta(funnel),
     });
   }
 
@@ -757,14 +834,16 @@ export function App() {
       setRecommendationMeta(null);
       return;
     }
-    const currentJobs = applications.filter((job) => (
-      job.stage === "进行中"
-      && job.market === targetMarket
-      && (job.employmentType ?? "全职") === employmentType
-    ));
-    const rerankedJobs = rankJobsForResume(currentJobs, masterResumeVersion.content, role, customDirections);
-    const rankedById = new Map(rerankedJobs.map((job) => [job.id, job]));
-    setApplications((current) => current.map((job) => rankedById.get(job.id) ?? job));
+    const funnel = buildRecommendationFunnel(applications, {
+      market: targetMarket,
+      employmentType,
+      resumeText: masterResumeVersion.content,
+      targetRole: role,
+      customDirections,
+      cap: 6,
+    });
+    const rerankedJobs = funnel.rankedJobs;
+    applyRankedRecommendations(rerankedJobs);
     saveRecommendationMeta(
       resumeFile?.name ?? masterResumeVersion.name,
       rerankedJobs,
@@ -775,6 +854,7 @@ export function App() {
       recommendationMeta?.remainingCount ?? 0,
       role,
       "local",
+      funnel,
     );
   }
 
@@ -827,21 +907,25 @@ export function App() {
 
       const cycle = discoveryCycles[discoveryKey] ?? 0;
       const seenIds = seenJobIdsByMarket[discoveryKey] ?? [];
-      const batch = getJobDiscoveryBatch(poolsForRun, market, requestedEmploymentType, cycle, 6, seenIds);
-      const rankedJobs = rankJobsForResume(
-        batch,
-        masterResumeVersion.content,
+      const funnel = buildRecommendationFunnel(Object.values(poolsForRun).flat(), {
+        market,
+        employmentType: requestedEmploymentType,
+        resumeText: masterResumeVersion.content,
         targetRole,
         customDirections,
-      ).map((job) => ({
+        cap: 6,
+        seenIds,
+        cycle,
+      });
+      const rankedJobs = funnel.rankedJobs.map((job) => ({
         ...job,
         isNew: !seenIds.includes(job.id),
         updated: !seenIds.includes(job.id) ? "本轮新发现" : "刚刚重新匹配",
       }));
       const newCount = rankedJobs.filter((job) => job.isNew).length;
       const nextSeenIds = [...new Set([...seenIds, ...rankedJobs.map((job) => job.id)])];
-      const discoverableCount = (poolsForRun[market] ?? []).filter((job) => job.stage === "进行中" && job.employmentType === requestedEmploymentType).length;
-      const remainingCount = Math.max(0, discoverableCount - nextSeenIds.length);
+      const discoverableCount = funnel.counts.relevant;
+      const remainingCount = funnel.relevantIds.filter((id) => !nextSeenIds.includes(id)).length;
       applyRankedRecommendations(rankedJobs);
       setDiscoveryCycles((current) => ({ ...current, [discoveryKey]: cycle + 1 }));
       setSeenJobIdsByMarket((current) => ({ ...current, [discoveryKey]: nextSeenIds }));
@@ -855,6 +939,7 @@ export function App() {
         remainingCount,
         targetRole,
         liveSearchResult?.jobs?.length ? "live" : "local",
+        funnel,
       );
       setSelectedDirection(targetRole);
       if (options.navigate !== false) setStep("radar");
@@ -1107,7 +1192,7 @@ export function App() {
         userTracked: job.userTracked,
       };
     }));
-  }, [allActiveJobPool]);
+  }, [allActiveJobPool, setApplications]);
 
   useEffect(() => {
     if (!masterResumeVersion?.content?.trim()) return;
@@ -1120,7 +1205,7 @@ export function App() {
         ? analyzeJobForResume(job, masterResumeVersion.content, targetRole, customDirections)
         : job
     )));
-  }, [masterResumeVersion?.content, targetRole, customDirections]);
+  }, [masterResumeVersion?.content, targetRole, customDirections, setApplications]);
 
   useEffect(() => {
     if (step !== "radar" || isRefreshingJobs || !masterResumeVersion?.content?.trim()) return;
@@ -1176,8 +1261,22 @@ export function App() {
   }, [isReviewReady]);
 
   useEffect(() => {
-    if (isApplicationAssistOpen) setIsApplicationAssistConfirmed(false);
-  }, [applicationAssistSourceFingerprint, isApplicationAssistOpen]);
+    if (!isApplicationAssistOpen || isApplicationAssistLaunching) return;
+    setIsApplicationAssistConfirmed(false);
+    setApplicationAssistAcknowledgements({
+      truth: false, sensitive: false, unknownQuestions: false, warnings: false, duplicate: false,
+    });
+  }, [
+    applicationAssistSourceFingerprint,
+    applicationPreflight?.receiptFingerprint,
+    isApplicationAssistLaunching,
+    isApplicationAssistOpen,
+  ]);
+
+  useEffect(() => {
+    if (!selectedNormalizedStatus) return;
+    setReviewStatus((current) => current === selectedNormalizedStatus ? current : selectedNormalizedStatus);
+  }, [selectedNormalizedStatus]);
 
   async function executeResumeRewrite(rewrite) {
     if (!rewrite || isAgentThinking) return false;
@@ -1187,11 +1286,14 @@ export function App() {
       if (job?.id) {
         setSelectedId(job.id);
         setReviewStatus("准备中");
-        setApplications((current) => current.map((item) => (
-          item.id === job.id
-            ? { ...item, userTracked: true, status: "准备中", statusKey: "tailoring", updated: "正在根据 JD 定制" }
-            : item
-        )));
+        setApplicationState((current) => {
+          const transitioned = transitionApplicationStatus(current, job.id, "准备中", { updated: "正在根据 JD 定制" });
+          return transitioned.changed ? transitioned.state : {
+            ...current,
+            applications: current.applications.map((item) => item.id === job.id
+              ? { ...item, userTracked: true, updated: "正在根据 JD 定制" } : item),
+          };
+        });
       }
       setStep("review");
       setActiveTab("定制简历");
@@ -1569,15 +1671,23 @@ export function App() {
       setResumeVersions([masterVersion]);
       const discoveryKey = getDiscoveryKey(targetMarket, employmentType);
       const seenIds = seenJobIdsByMarket[discoveryKey] ?? [];
-      const initialBatch = getJobDiscoveryBatch(activeJobPoolsByMarket, targetMarket, employmentType, 0, 6, seenIds);
-      const rankedJobs = rankJobsForResume(initialBatch, importedText, targetRole, customDirections).map((job) => ({
+      const funnel = buildRecommendationFunnel(allActiveJobPool, {
+        market: targetMarket,
+        employmentType,
+        resumeText: importedText,
+        targetRole,
+        customDirections,
+        cap: 6,
+        seenIds,
+        cycle: 0,
+      });
+      const rankedJobs = funnel.rankedJobs.map((job) => ({
         ...job,
         isNew: !seenIds.includes(job.id),
         updated: !seenIds.includes(job.id) ? "刚刚发现并匹配" : "刚刚重新匹配",
       }));
       const nextSeenIds = [...new Set([...seenIds, ...rankedJobs.map((job) => job.id)])];
-      const discoverableCount = (activeJobPoolsByMarket[targetMarket] ?? []).filter((job) => job.stage === "进行中" && job.employmentType === employmentType).length;
-      const remainingCount = Math.max(0, discoverableCount - nextSeenIds.length);
+      const remainingCount = funnel.relevantIds.filter((id) => !nextSeenIds.includes(id)).length;
       applyRankedRecommendations(rankedJobs);
       setDiscoveryCycles((current) => ({ ...current, [discoveryKey]: 1 }));
       setSeenJobIdsByMarket((current) => ({ ...current, [discoveryKey]: nextSeenIds }));
@@ -1591,6 +1701,7 @@ export function App() {
         remainingCount,
         targetRole,
         "local",
+        funnel,
       );
       setActiveResumeVersionId(masterVersion.id);
       setResumePageSize(documentMeta.sourcePageSize ?? "A4");
@@ -1654,20 +1765,16 @@ export function App() {
   function updateSelectedReviewStatus(status) {
     setReviewStatus(status);
     if (!selected?.id) return;
-    setApplications((current) =>
-      current.map((job) =>
-        job.id === selected.id
-          ? {
-              ...job,
-              status,
-              statusKey: statusKeyByLabel[status] ?? "queued",
-              stage: status === "已归档" ? "已归档" : "进行中",
-              userTracked: true,
-              updated: "刚刚更新",
-            }
-          : job,
-      ),
-    );
+    setApplicationState((current) => transitionApplicationStatus(current, selected.id, status, { updated: "刚刚更新" }).state);
+  }
+
+  function revertSelectedReviewStatus() {
+    if (!selected?.id) return;
+    setApplicationState((current) => revertLatestApplicationStatusChange(
+      current,
+      selected.id,
+      { updated: "刚刚撤销" },
+    ).state);
   }
 
   function applyLiveUrlChecks(checks) {
@@ -1684,17 +1791,35 @@ export function App() {
     return Boolean(job?.id && verifyingJobIds.includes(job.id));
   }
 
-  async function openJobSource(job) {
+  function evaluateCurrentApplicationPreflight(job) {
+    return evaluateApplicationPreflight({
+      applicationId: job.id, job, applicationUrl: job.applyUrl || (job.source === "手动 JD" ? job.url : ""),
+      resumeVersion: selectedJobResumeVersion, resumeVersions,
+      hasUnsavedResumeChanges: hasUnsavedSelectedJobResumeChanges,
+      contact: candidateProfile, contactValid: applicationContactValidation.ready,
+      authorizedGroups: Object.entries(applicationAssistAuthorization).filter(([, allowed]) => allowed).map(([group]) => group),
+      authorizedFieldCount: applicationFieldPacket.groups.filter((group) => applicationAssistAuthorization[group.id]).flatMap((group) => group.fields).length,
+      contactAuthorized: applicationAssistAuthorization.contact === true,
+      acknowledgements: applicationAssistAcknowledgements, applications, applicationEventsById,
+      sensitiveLinesExcluded: applicationFieldPacket.groups.reduce((count, group) => count + (group.excludedLineCount ?? 0), 0),
+      packetSectionsAvailable: applicationFieldPacket.groups.every((group) => group.fields.length > 0),
+    });
+  }
+
+  async function openJobSource(job, { preflightMetadata = null } = {}) {
     if (job?.verificationStatus === "unavailable") {
       setToast("官网已确认该岗位失效，已保留你的求职记录。");
       return false;
     }
+    let verifiedJob = job;
+    let eventMetadata = preflightMetadata;
     const applicationUrl = job?.applyUrl || (job?.source === "手动 JD" ? job.url : "");
     if (!applicationUrl || !isSpecificApplicationUrl(applicationUrl)) {
       setToast("这个岗位缺少具体申请链接，不会跳转到公司招聘首页。请重新导入并补充职位链接。");
       return false;
     }
-    const requiresFreshVerification = isLiveOfficialVerificationStale(job);
+    const requiresFreshVerification = job?.verificationStatus !== "verified"
+      || !hasFreshOpenSourceReceipt(job);
     if (requiresFreshVerification && isJobUrlVerifying(job)) return false;
     const reservedApplicationWindow = reserveApplicationWindow(window.open.bind(window));
     if (!reservedApplicationWindow) {
@@ -1719,6 +1844,13 @@ export function App() {
       } finally {
         setVerifyingJobIds((current) => current.filter((id) => id !== job.id));
       }
+      verifiedJob = {
+        ...job,
+        verificationStatus: check.state === "closed" ? "unavailable" : check.state === "open" ? "verified" : "unknown",
+        verifiedAt: check.checkedAt ?? job.verifiedAt,
+        sourceReceipt: updateSourceReceiptVerification(job, check),
+      };
+      setApplications((current) => current.map((item) => item.id === job.id ? { ...item, ...verifiedJob } : item));
       applyLiveUrlChecks([check]);
       if (check.state === "closed") {
         closeReservedApplicationWindow(reservedApplicationWindow);
@@ -1731,14 +1863,42 @@ export function App() {
         return false;
       }
     }
+    if (eventMetadata) {
+      const finalPreflight = evaluateCurrentApplicationPreflight(verifiedJob);
+      if (!finalPreflight.ready) {
+        closeReservedApplicationWindow(reservedApplicationWindow);
+        setToast(t("官网复核后申请前检查发生变化，请确认全部警告后重试。"));
+        return false;
+      }
+      const previousWarnings = [...(eventMetadata.warningCodes ?? [])].sort();
+      const finalWarnings = [...finalPreflight.warnings].sort();
+      if (previousWarnings.join("\u0000") !== finalWarnings.join("\u0000")) {
+        closeReservedApplicationWindow(reservedApplicationWindow);
+        setApplicationAssistAcknowledgements((current) => ({ ...current, warnings: false }));
+        setToast(t("官网复核更新了人工复核警告，请重新确认后再打开。"));
+        return false;
+      }
+      eventMetadata = {
+        ...eventMetadata,
+        sourceReceiptFingerprint: finalPreflight.receiptFingerprint,
+        warningCodes: finalPreflight.warnings,
+      };
+    }
     if (!navigateReservedApplicationWindow(reservedApplicationWindow, applicationUrl)) {
       closeReservedApplicationWindow(reservedApplicationWindow);
       setToast(t("申请页预留窗口已关闭，未自动打开。请重新打开此岗位。"));
       return false;
     }
-    setApplications((current) => current.map((item) => (
-      item.id === job.id ? { ...item, userTracked: true, updated: "刚刚打开申请页" } : item
-    )));
+    setApplicationState((current) => {
+      let next = {
+        ...current,
+        applications: current.applications.map((item) => (
+          item.id === job.id ? { ...item, userTracked: true, updated: "刚刚打开申请页" } : item
+        )),
+      };
+      if (eventMetadata) next = appendPreflightPassed(next, job.id, { metadata: eventMetadata }).state;
+      return appendApplicationOpened(next, job.id, { metadata: eventMetadata ?? {} }).state;
+    });
     setToast(`已打开 ${job.company} 的具体职位申请页。`);
     return true;
   }
@@ -1746,12 +1906,14 @@ export function App() {
   function updateCandidateProfile(field, value) {
     setCandidateProfile((current) => ({ ...current, [field]: value }));
     setIsApplicationAssistConfirmed(false);
+    setApplicationAssistAcknowledgements({ truth: false, sensitive: false, unknownQuestions: false, warnings: false, duplicate: false });
   }
 
   function toggleApplicationAssistAuthorization(field) {
     if (!applicationFieldPacket.groups.find((group) => group.id === field)?.fields.length) return;
     setApplicationAssistAuthorization((current) => ({ ...current, [field]: !current[field] }));
     setIsApplicationAssistConfirmed(false);
+    setApplicationAssistAcknowledgements({ truth: false, sensitive: false, unknownQuestions: false, warnings: false, duplicate: false });
   }
 
   function prepareApplicationAssist() {
@@ -1764,6 +1926,7 @@ export function App() {
     setActiveResumeVersionId(selectedJobResumeVersion.id);
     setApplicationAssistAuthorization({ contact: false, education: false, experience: false });
     setIsApplicationAssistConfirmed(false);
+    setApplicationAssistAcknowledgements({ truth: false, sensitive: false, unknownQuestions: false, warnings: false, duplicate: false });
     setIsApplicationAssistOpen(true);
   }
 
@@ -1794,7 +1957,7 @@ export function App() {
       setToast("官网已确认该岗位失效，已保留你的求职记录。");
       return;
     }
-    if (!canLaunchCurrentApplicationAssist) {
+    if (!canLaunchCurrentApplicationAssist || !applicationPreflight?.ready) {
       setToast(applicationContactValidation.reason === "invalid-email"
         ? t("请填写格式正确的邮箱；不会猜测或改写邮箱。")
         : t("先补齐姓名和邮箱，并明确允许使用联系方式。"));
@@ -1820,7 +1983,14 @@ export function App() {
     });
     setIsApplicationAssistLaunching(true);
     try {
-      if (await openJobSource(job)) {
+      if (await openJobSource(job, {
+        preflightMetadata: {
+          resumeVersionId: resumeVersion?.id ?? "unknown",
+          sourceReceiptFingerprint: applicationPreflight.receiptFingerprint,
+          authorizedGroups: allowedGroups,
+          warningCodes: applicationPreflight.warnings,
+        },
+      })) {
         setApplicationAssists((current) => ({ ...current, [job.id]: audit }));
         setIsApplicationAssistOpen(false);
         setToast(t("已打开职位申请页。字段包仅供逐项复制，不会自动填表；最终提交必须由本人完成。"));
@@ -1831,25 +2001,13 @@ export function App() {
   }
 
   function watchJob(job) {
-    setApplications((current) =>
-      current.map((item) =>
-        item.id === job.id
-          ? { ...item, status: "收藏", statusKey: "saved", stage: "进行中", userTracked: true, updated: "刚刚收藏" }
-          : item,
-      ),
-    );
+    setApplicationState((current) => transitionApplicationStatus(current, job.id, "收藏", { updated: "刚刚收藏" }).state);
     setToast(`已收藏 ${job.company} - ${job.role}，可以在已投递页继续跟踪。`);
   }
 
   function archiveJob(job) {
     const nextJob = applications.find((item) => item.id !== job.id && item.stage === "进行中");
-    setApplications((current) =>
-      current.map((item) =>
-        item.id === job.id
-          ? { ...item, status: "已归档", statusKey: "archived", stage: "已归档", userTracked: true, updated: "刚刚忽略" }
-          : item,
-      ),
-    );
+    setApplicationState((current) => transitionApplicationStatus(current, job.id, "已归档", { updated: "刚刚忽略" }).state);
     if (selectedId === job.id) {
       setSelectedId(nextJob?.id ?? null);
       setReviewStatus(nextJob?.status ?? "审核中");
@@ -1969,7 +2127,13 @@ export function App() {
         ? analyzedJob.missingSignals.map((signal) => `Master Resume 中尚未确认：${signal}`)
         : baseJob.gaps,
     };
-    setApplications((current) => [importedJob, ...current.filter((job) => job.id !== importedJob.id)]);
+    setApplicationState((current) => {
+      const eventBaseJob = existingJob ? { ...importedJob, status: existingJob.status, statusKey: existingJob.statusKey, stage: existingJob.stage } : importedJob;
+      const interim = { ...current, applications: [eventBaseJob, ...current.applications.filter((job) => job.id !== importedJob.id)] };
+      return existingJob
+        ? transitionApplicationStatus(interim, importedJob.id, "收藏", { updated: "刚刚导入" }).state
+        : interim;
+    });
     setSelectedId(importedJob.id);
     setReviewStatus(normalizeApplicationStatus(importedJob.status));
     setActiveTab("岗位匹配");
@@ -2231,9 +2395,16 @@ export function App() {
                   <div><dt>{t("核验状态")}</dt><dd>{sourceReceiptValue(selected.sourceReceipt?.verificationState, t)}</dd></div>
                   <div><dt>{t("核验原因")}</dt><dd>{sourceReceiptValue(selected.sourceReceipt?.verificationReason, t)}</dd></div>
                   <div><dt>{t("核验时间")}</dt><dd>{formatReceiptTimestamp(selected.sourceReceipt?.verifiedAt, uiLanguage, t)}</dd></div>
-                  <div><dt>{t("JD 哈希")}</dt><dd>{formatReceiptHash(selected.sourceReceipt, t)}</dd></div>
+                  <div><dt>{t("来源证据类型")}</dt><dd>{sourceReceiptValue(selected.sourceReceipt?.sourceArtifact?.kind, t)}</dd></div>
+                  <div><dt>{t("来源证据哈希")}</dt><dd>{formatReceiptHash(selected.sourceReceipt?.sourceArtifact, t)}</dd></div>
+                  <div><dt>{t("来源抓取时间")}</dt><dd>{formatReceiptTimestamp(selected.sourceReceipt?.sourceArtifact?.capturedAt, uiLanguage, t)}</dd></div>
+                  <div><dt>{t("抓取完整性")}</dt><dd>{selected.sourceReceipt?.sourceArtifact?.complete ? t("完整") : t("未提供")}</dd></div>
+                  <div><dt>{t("快照字节数")}</dt><dd>{selected.sourceReceipt?.sourceArtifact?.complete ? selected.sourceReceipt.sourceArtifact.byteLength.toLocaleString() : t("未提供")}</dd></div>
+                  <div><dt>{t("JD 释义类型")}</dt><dd>{sourceReceiptValue(selected.sourceReceipt?.summaryArtifact?.kind, t)}</dd></div>
+                  <div><dt>{t("JD 释义哈希")}</dt><dd>{formatReceiptHash(selected.sourceReceipt?.summaryArtifact, t)}</dd></div>
+                  <div><dt>{t("JD 释义生成时间")}</dt><dd>{formatReceiptTimestamp(selected.sourceReceipt?.summaryArtifact?.generatedAt, uiLanguage, t)}</dd></div>
                   <div className="source-receipt-url"><dt>{t("岗位链接")}</dt><dd>{normalizeReceiptUrl(selected.sourceReceipt?.postingUrl) ? <a href={normalizeReceiptUrl(selected.sourceReceipt.postingUrl)} target="_blank" rel="noreferrer">{normalizeReceiptUrl(selected.sourceReceipt.postingUrl)}</a> : t("未提供")}</dd></div>
-                  <div className="source-receipt-url"><dt>{t("申请链接")}</dt><dd>{normalizeReceiptUrl(selected.sourceReceipt?.applyUrl) ? <a href={normalizeReceiptUrl(selected.sourceReceipt.applyUrl)} target="_blank" rel="noreferrer">{normalizeReceiptUrl(selected.sourceReceipt.applyUrl)}</a> : t("未提供")}</dd></div>
+                  <div className="source-receipt-url"><dt>{t("申请链接")}</dt><dd>{normalizeReceiptUrl(selected.sourceReceipt?.applyUrl) ? <button className="link-row" disabled={isJobUrlVerifying(selected)} onClick={() => openJobSource(selected)}>{normalizeReceiptUrl(selected.sourceReceipt.applyUrl)}</button> : t("未提供")}</dd></div>
                 </dl>
               </details>
               {selected.jdText && (
@@ -2832,6 +3003,14 @@ export function App() {
                               : ` · 第 ${recommendationMeta.batch ?? 1} 批 · 新增 ${recommendationMeta.newCount ?? 0} 个${recommendationMeta.remainingCount > 0 ? ` · 池内还有 ${recommendationMeta.remainingCount} 个未看` : " · 本地池已看完"}`
                             : ` · ${t("尚未按当前市场刷新")}`}
                         </span>
+                        {recommendationMeta?.funnel && (() => {
+                          const funnel = recommendationMeta.funnel;
+                          const excluded = primaryFunnelExclusion(funnel);
+                          return <small className="recommendation-funnel">
+                            {t("筛选前")} {funnel.counts?.input ?? 0} · {t("可用")} {funnel.counts?.available ?? 0} · {t("相关")} {funnel.counts?.relevant ?? 0} · {t("展示")} {funnel.counts?.returned ?? 0}
+                            {excluded ? ` · ${t("主要排除")} ${t(funnelExclusionLabels[excluded.reason] ?? "未提供")} ${excluded.count}` : ""}
+                          </small>;
+                        })()}
                       </div>
                       <button onClick={() => setSearchQuery("")}><FunnelSimple size={16} />{t("信号分排序")}</button>
                     </div>
@@ -2955,7 +3134,7 @@ export function App() {
                           <strong role="cell">{formatJobSignalScore(job)}</strong>
                           <label role="cell" className="application-status-select">
                             <StatusDot status={normalizeApplicationStatus(job.status)} />
-                            <select aria-label={uiLanguage === "en" ? `Update ${job.company} ${job.role} status` : `更新${job.company}${job.role}的投递状态`} value={normalizeApplicationStatus(job.status)} onChange={(event) => { setSelectedId(job.id); setReviewStatus(event.target.value); setApplications((current) => current.map((item) => item.id === job.id ? { ...item, status: event.target.value, statusKey: statusKeyByLabel[event.target.value], userTracked: true, updated: "刚刚更新" } : item)); }}>
+                            <select aria-label={uiLanguage === "en" ? `Update ${job.company} ${job.role} status` : `更新${job.company}${job.role}的投递状态`} value={normalizeApplicationStatus(job.status)} onChange={(event) => { setSelectedId(job.id); setReviewStatus(event.target.value); setApplicationState((current) => transitionApplicationStatus(current, job.id, event.target.value, { updated: "刚刚更新" }).state); }}>
                               {statusOptions.filter((status) => status !== "已归档").map((status) => <option key={status} value={status}>{t(status)}</option>)}
                             </select>
                             <CaretDown size={14} />
@@ -3020,6 +3199,16 @@ export function App() {
           <div className="rail-group">
             <span>{t("最近更新")}</span>
             <strong>{t(selected.updated)}</strong>
+          </div>
+          <div className="rail-group">
+            <span>{t("状态历史")}</span>
+            {selectedApplicationEvents.length ? selectedApplicationEvents.slice(-4).reverse().map((event) => (
+              <small key={event.id}>
+                {event.type === "status.changed" ? `${t(event.fromStatus)} → ${t(event.toStatus)}` : event.type === "status.reverted" ? t("已撤销最近状态变更") : event.type === "preflight.passed" ? t("申请前检查已通过") : t("已打开具体申请页")}
+                {` · ${formatReceiptTimestamp(event.occurredAt, uiLanguage, t)}`}
+              </small>
+            )) : <small>{t("历史从此功能启用后开始")}</small>}
+            {selectedStatusRevertibility.canRevert && <button className="link-row" onClick={revertSelectedReviewStatus}>{t("撤销最近状态变更")}</button>}
           </div>
           <div className="rail-group">
             <span>{t("当前草稿")}</span>
@@ -3156,10 +3345,13 @@ export function App() {
           isConfirmed={isApplicationAssistConfirmed}
           onConfirmationChange={setIsApplicationAssistConfirmed}
           packet={applicationFieldPacket}
-          canLaunch={canLaunchCurrentApplicationAssist}
+          canLaunch={canLaunchCurrentApplicationAssist && Boolean(applicationPreflight?.ready)}
           contactValidation={applicationContactValidation}
           previousAudit={selectedApplicationAssist}
           sourceChanged={applicationAssistSourceChanged}
+          preflight={applicationPreflight}
+          acknowledgements={applicationAssistAcknowledgements}
+          onAcknowledgementsChange={setApplicationAssistAcknowledgements}
           onCopyFields={copyApplicationFields}
           isLaunching={isApplicationAssistLaunching}
           onClose={closeApplicationAssist}

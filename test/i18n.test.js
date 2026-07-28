@@ -23,3 +23,13 @@ test("signal-score labels stay explicit in both interface languages", () => {
   assert.equal(translateUiText("信号分排序", "en"), "Sort by signal score");
   assert.equal(translateUiText("信号分", "en"), "Signal score");
 });
+
+test("application preflight and event history stay localized in English", () => {
+  assert.equal(translateUiText("申请前检查", "en"), "Application preflight");
+  assert.equal(
+    translateUiText("我确认未知问题将由我本人在官网填写。", "en"),
+    "I confirm that I will answer unknown questions on the official site myself.",
+  );
+  assert.equal(translateUiText("状态历史", "en"), "Status history");
+  assert.equal(translateUiText("撤销最近状态变更", "en"), "Undo latest status change");
+});

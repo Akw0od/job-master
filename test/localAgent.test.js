@@ -83,7 +83,7 @@ test("job discovery prompt excludes candidate resume data", () => {
   assert.match(prompt, /Do not use or request candidate personal data/);
 });
 
-test("verified live jobs receive a deterministic SHA-256 source receipt", () => {
+test("verified live jobs separate generated JD summaries from official snapshots", () => {
   const jdText = "Build reliable systems for a candidate-facing dashboard.";
   const searchedAt = "2026-07-27T12:00:00.000Z";
   const job = {
@@ -108,7 +108,7 @@ test("verified live jobs receive a deterministic SHA-256 source receipt", () => 
   assert.equal(normalized.jobs[0].jdHash, expectedHash);
   assert.equal(normalized.jobs[0].jdHashAlgorithm, "sha-256");
   assert.deepEqual(receipt, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     origin: "live-official-search",
     provider: "ashby",
     providerJobId: "eaf9207e-84c9-4fa2-bd57-6877b7eb7f79",
@@ -118,9 +118,44 @@ test("verified live jobs receive a deterministic SHA-256 source receipt", () => 
     verificationState: "open",
     verifiedAt: searchedAt,
     verificationReason: "live-search-verified",
-    jdHash: expectedHash,
-    jdHashAlgorithm: "sha-256",
+    sourceArtifact: {
+      kind: "missing", sourceUrl: "", capturedAt: "", byteLength: 0, complete: false, contentHash: "", hashAlgorithm: "none",
+    },
+    summaryArtifact: {
+      kind: "agent-paraphrase", generatedAt: searchedAt, contentHash: expectedHash, hashAlgorithm: "sha-256",
+    },
   });
+});
+
+test("complete official responses create byte hashes while incomplete checks create no snapshot", async () => {
+  const html = "<html><body>Open role</body></html>";
+  const job = {
+    company: "Example", role: "Engineer", location: "Remote", employmentType: "全职",
+    applyUrl: "https://example.com/jobs/engineer-123", jdText: "Agent generated summary one.",
+  };
+  const complete = await verifyJobSearchResult({ jobs: [job] }, {
+    market: "美国", employmentType: "全职", targetRole: "Software Engineer", limit: 8,
+  }, {
+    fetchImpl: async () => ({ ok: true, status: 200, headers: { get: () => null }, body: Readable.toWeb(Readable.from([Buffer.from(html)])) }),
+  });
+  const snapshot = complete.jobs[0].sourceReceipt.sourceArtifact;
+  assert.deepEqual(snapshot, {
+    kind: "official-response", sourceUrl: job.applyUrl,
+    capturedAt: snapshot.capturedAt,
+    byteLength: Buffer.byteLength(html),
+    complete: true,
+    contentHash: createHash("sha256").update(html, "utf8").digest("hex"),
+    hashAlgorithm: "sha-256",
+  });
+  assert.equal(complete.jobs[0].sourceReceipt.summaryArtifact.contentHash, createHash("sha256").update(job.jdText, "utf8").digest("hex"));
+
+  const incomplete = await verifyJobSearchResult({ jobs: [job] }, {
+    market: "美国", employmentType: "全职", targetRole: "Software Engineer", limit: 8,
+  }, {
+    fetchImpl: async () => ({ ok: true, status: 200, headers: { get: () => null }, body: { getReader: () => ({ read: async () => ({ done: false, value: new Uint8Array(400000) }), cancel: async () => {}, releaseLock: () => {} }), cancel: async () => {} } }),
+  });
+  assert.equal(incomplete.jobs.length, 0);
+  assert.equal(incomplete.verificationChecks[0].sourceArtifact, undefined);
 });
 
 test("job search returns every deterministic recheck outcome with timestamps and reason codes", async () => {

@@ -5,6 +5,7 @@ import { translateUiText } from "../src/i18n.js";
 import { getNextTabKey } from "../src/services/tabNavigation.js";
 
 const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+const applicationAssistSource = readFileSync(new URL("../src/components/modals/ApplicationAssistModal.jsx", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
 test("navigation, filters, search, and status controls expose stable accessible state", () => {
@@ -58,10 +59,30 @@ test("source receipt uses a native collapsed disclosure with localized labels", 
   assert.match(styles, /@media \(max-width: 620px\)[\s\S]*?\.source-receipt-grid[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/);
   assert.match(styles, /\.source-receipt summary:focus-visible/);
   assert.match(appSource, /function formatReceiptTimestamp[\s\S]*?Number\.isFinite\(timestamp\)[\s\S]*?: t\("未提供"\)/);
-  assert.match(appSource, /function formatReceiptHash[\s\S]*?if \(!receipt\?\.jdHash\) return t\("未提供"\)/);
+  assert.match(appSource, /function formatReceiptHash[\s\S]*?if \(!artifact\?\.contentHash\) return t\("未提供"\)/);
+  assert.match(appSource, /来源证据类型[\s\S]*?JD 释义生成时间/);
   assert.match(appSource, /applyLiveUrlChecks\(liveSearchResult\.verificationChecks\)/);
+  assert.match(appSource, /buildRecommendationFunnel\(allActiveJobPool/);
+  assert.match(appSource, /applyRankedRecommendations\(rerankedJobs\)/);
   assert.equal(
     translateUiText("无法安全定位这处原文，未修改简历；请重新生成建议后再审核。", "en"),
     "This source text could not be located safely, so the resume was not changed. Regenerate the suggestion before reviewing again.",
   );
+});
+
+test("application assist is gated by the final preflight and records events only after navigation", () => {
+  assert.match(appSource, /const requiresFreshVerification = job\?\.verificationStatus !== "verified"\s*\|\| !hasFreshOpenSourceReceipt\(job\)/);
+  assert.match(appSource, /canLaunch=\{canLaunchCurrentApplicationAssist && Boolean\(applicationPreflight\?\.ready\)\}/);
+  assert.match(appSource, /申请链接[\s\S]*?<button className="link-row"[\s\S]*?onClick=\{\(\) => openJobSource\(selected\)\}/);
+  assert.doesNotMatch(applicationAssistSource, /check\.code\.replaceAll/);
+  assert.match(applicationAssistSource, /preflightLabel\(check\.code, check\.passed\)/);
+  assert.match(styles, /\.assist-check-passed/);
+
+  const controllerStart = appSource.indexOf("async function openJobSource");
+  const navigationGuard = appSource.indexOf("if (!navigateReservedApplicationWindow", controllerStart);
+  const preflightEvent = appSource.indexOf("appendPreflightPassed", navigationGuard);
+  const openedEvent = appSource.indexOf("appendApplicationOpened", preflightEvent);
+  assert.ok(controllerStart >= 0 && navigationGuard > controllerStart);
+  assert.ok(preflightEvent > navigationGuard);
+  assert.ok(openedEvent > preflightEvent);
 });

@@ -166,7 +166,7 @@ function toPreviewBytes(value) {
 async function readResponsePreview(body) {
   if (!body?.getReader) {
     await cancelResponseBody(body);
-    return { preview: "", complete: true };
+    return { preview: "", complete: true, byteLength: 0, contentHash: "" };
   }
 
   const reader = body.getReader();
@@ -174,6 +174,7 @@ async function readResponsePreview(body) {
   let bytesRead = 0;
   let chunksRead = 0;
   let preview = "";
+  const hash = createHash("sha256");
   try {
     let complete = false;
     while (bytesRead < maxJobPagePreviewBytes && chunksRead < maxJobPagePreviewChunks) {
@@ -188,9 +189,15 @@ async function readResponsePreview(body) {
       const previewChunk = bytes.subarray(0, remaining);
       preview += decoder.decode(previewChunk, { stream: true });
       bytesRead += previewChunk.byteLength;
+      hash.update(previewChunk);
       if (previewChunk.byteLength < bytes.byteLength) break;
     }
-    return { preview: `${preview}${decoder.decode()}`, complete };
+    return {
+      preview: `${preview}${decoder.decode()}`,
+      complete,
+      byteLength: bytesRead,
+      contentHash: complete && bytesRead > 0 ? hash.digest("hex") : "",
+    };
   } finally {
     try {
       await reader.cancel();
@@ -524,7 +531,7 @@ export function normalizeJobSearchResult(
     const jdText = String(job.jdText || "").trim();
     const applyUrl = String(job.applyUrl || "").trim();
     const providerData = deriveOfficialJobProvider(applyUrl);
-    const jdHash = sha256Hex(jdText);
+    const summaryHash = sha256Hex(jdText);
     unique.set(key, {
       id: stableJobId(job),
       company: String(job.company).trim(),
@@ -536,7 +543,7 @@ export function normalizeJobSearchResult(
       posted: String(job.posted || "链接已核验").trim(),
       summary: String(job.summary || "").trim(),
       jdText,
-      jdHash,
+      jdHash: summaryHash,
       jdHashAlgorithm: "sha-256",
       requirements: Array.isArray(job.requirements) ? job.requirements.map(String).filter(Boolean).slice(0, 12) : [],
       verifiedAt: searchedAt,
@@ -551,8 +558,15 @@ export function normalizeJobSearchResult(
         verificationState: "open",
         verifiedAt: searchedAt,
         verificationReason: String(job.verificationReason || "live-search-verified"),
-        jdHash,
-        jdHashAlgorithm: "sha-256",
+        sourceArtifact: job.sourceArtifact ?? {
+          kind: "missing", sourceUrl: "", capturedAt: "", byteLength: 0, complete: false, contentHash: "", hashAlgorithm: "none",
+        },
+        summaryArtifact: {
+          kind: "agent-paraphrase",
+          generatedAt: searchedAt,
+          contentHash: summaryHash,
+          hashAlgorithm: "sha-256",
+        },
       },
     });
   }
@@ -637,7 +651,23 @@ async function checkJobUrl(job, requestUrl) {
       if (!preview.complete) return asUnknown("bounded-response");
       const ashbyStatus = await isPublishedAshbyJob(currentUrl, requestUrl, controller.signal);
       if (ashbyStatus.state !== verificationState.open) return ashbyStatus;
-      return { state: verificationState.open, reason: ashbyStatus.reason ?? "url-open", job: { ...job, applyUrl: currentUrl } };
+      return {
+        state: verificationState.open,
+        reason: ashbyStatus.reason ?? "url-open",
+        job: {
+          ...job,
+          applyUrl: currentUrl,
+          sourceArtifact: preview.contentHash ? {
+            kind: "official-response",
+            sourceUrl: currentUrl,
+            capturedAt: new Date().toISOString(),
+            byteLength: preview.byteLength,
+            complete: true,
+            contentHash: preview.contentHash,
+            hashAlgorithm: "sha-256",
+          } : undefined,
+        },
+      };
     }
     return asUnknown("redirect-inconclusive");
   } catch {
@@ -668,6 +698,7 @@ export async function verifyJobUrls(
       state: verification.state,
       checkedAt,
       reason: verification.reason ?? "network-or-inconclusive",
+      sourceArtifact: verification.job?.sourceArtifact,
     })),
   };
 }
@@ -723,6 +754,7 @@ export async function verifyJobSearchResult(
       state: verification.state,
       checkedAt,
       reason: verification.reason ?? "network-or-inconclusive",
+      sourceArtifact: verification.job?.sourceArtifact,
     };
   });
   const checkedCandidates = candidateEntries.map((entry) => ({

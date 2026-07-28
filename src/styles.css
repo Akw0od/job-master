@@ -4467,6 +4467,17 @@ progress::-webkit-progress-value {
   line-height: 1.45;
 }
 
+.assist-check-passed {
+  margin: 0;
+  padding: 9px 10px;
+  border: 1px solid #d7e7db;
+  border-radius: 7px;
+  color: #3f684b;
+  background: #f5fbf6;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .consent-list {
   display: grid;
   gap: 9px;
@@ -6310,6 +6321,7 @@ progress::-webkit-progress-value {
 .application-table-heading > div {
   display: flex;
   align-items: baseline;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
@@ -6322,6 +6334,28 @@ progress::-webkit-progress-value {
 .application-table-heading span {
   color: #7a8091;
   font-size: 12px;
+}
+
+.recommendation-funnel {
+  flex-basis: 100%;
+  color: #626a7e;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+@media (max-width: 420px) {
+  .results-heading {
+    align-items: flex-start;
+    padding: 12px 14px;
+  }
+
+  .results-heading > div {
+    min-width: 0;
+  }
+
+  .results-heading button {
+    flex: 0 0 auto;
+  }
 }
 
 .results-heading button {
@@ -7000,6 +7034,20 @@ progress::-webkit-progress-value {
 
   .job-discovery-card {
     grid-template-columns: 1fr;
+  }
+
+  .job-card-title {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .job-card-title strong {
+    overflow-wrap: break-word;
+  }
+
+  .job-card-badges {
+    flex-wrap: wrap;
   }
 
   .job-card-actions {

@@ -41,4 +41,10 @@ When implementing from a selected generated mock, treat that image as the source
 - Resume PDF export must use selectable text, support A4 and Letter, and preserve system CJK fonts. Do not regress to screenshot-only PDFs; the browser print/save dialog remains the final user-controlled file action.
 - Keep Stripe work outside the current core-fix scope. If the deferred billing prototype is restored later, use server-created Checkout Sessions and never claim Alipay or WeChat Pay support until Stripe Dashboard approval is confirmed for this Jobmaster account.
 - Support a browser-local Chinese/English interface switch. Locale changes product chrome only; never translate or mutate uploaded resume text, pasted JDs, custom directions, or other user-owned content.
+- Keep deterministic source artifacts separate from Agent-authored JD paraphrases in source receipts. Missing captures remain explicit and must never be inferred from generated summaries.
+- Recommendation refreshes must expose the actual filter -> score -> truncate funnel using bounded aggregate counts and exclusion reasons; never persist hidden duplicate job/JD payloads as funnel metadata.
+- Persist application status changes as bounded, browser-local event history alongside the current record; legacy data starts with an empty history and only the latest reversible status change may be undone.
+- Before opening an application page, re-check a concrete official URL and the source receipt. Opening a page is navigation only: never auto-fill or submit.
+- Application assistance requires a saved job-derived resume, explicit field-group authorization, explicit truth/sensitive/unknown-answer acknowledgements, and visible warnings or duplicate overrides.
+- Application-preflight and event metadata may retain only IDs, bounded codes, and receipt fingerprints; never persist candidate contact, resume text, JD text, answers, or URLs in audit history.
 - Discovered and imported jobs must carry a visible source receipt. Unknown or missing provider, identifier, timestamp, verification, and JD-hash values stay explicit and are never inferred.
