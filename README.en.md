@@ -14,7 +14,7 @@ Job Master combines an installable agent skill with a local visual workspace.
 - **Skill:** reads a job description, selects evidence from a candidate-controlled fact base, and creates tailored application materials and structured autofill data.
 - **Web workspace:** manages an immutable Master Resume, reusable direction resumes, disposable job-specific variants, job discovery, and application tracking.
 
-It is not an auto-apply bot. Browser assistance reviews a per-role, per-resume local field packet and opens a specific application page; it does not fill or submit the form. Final submission and sensitive questions always require the candidate's explicit review.
+It is not an auto-apply bot. Manual official-site handoff remains the default. Optional automation is limited to one exact role, one frozen application payload, and one attempt after the candidate reviews the actual site fields and grants a second company-and-role-specific authorization. Authorization expires after 10 minutes, and any page, field, resume, or receipt change invalidates it. Work authorization, sponsorship, EEOC, compensation, attachments, and CAPTCHA stay manual.
 
 ## Web Workspace
 
@@ -33,14 +33,18 @@ It is not an auto-apply bot. Browser assistance reviews a per-role, per-resume l
 - English technical terms use word-boundary matching (`AI` is never inferred from `email`), while Chinese terms can use safe containment. When the algorithm version changes, old signal scores and derived inputs are cleared to Needs refresh rather than displayed as current.
 - Add a role to Applications only after the user saves it, starts tailoring, or opens the application page.
 - Track candidate-facing states from Saved through Applied, Interview, Offer, Rejected, and Archived.
+- Use Today to prioritize up to five interview, due follow-up, role-verification, resume-tailoring, or application-review actions. Follow-up creates a copyable draft but never sends a message.
+- Keep interview scheduling, prep, and debrief notes beside an evidence-led outline built only from the submitted resume and current role. Show observed discovery-to-application conversions with explicit small-sample labels.
+- Reuse only candidate-confirmed non-sensitive answers from the browser-local answer library. Work authorization, visa, identity, and compensation answers are never stored.
 - Before each opening of a specific job application URL, re-review the local field packet for that exact role and resume version. Only individually authorized contact details, explicit education sections, and explicit experience or project sections can be copied to the system clipboard.
-- Never auto-fill or submit. The packet excludes work authorization, visa or sponsorship, salary, EEOC or identity, confidentiality statements, and submission actions; after a successful opening, browser-local audit data retain only authorization metadata and a non-plaintext source fingerprint.
+- Manual mode never auto-fills or submits. For Greenhouse, Ashby, Lever, and safely identified official company sites, optional modes can fill and stop or submit once after actual page fields are reviewed. CAPTCHA, changed pages, missing required fields, attachments, sensitive fields, and ambiguous submit controls stop execution.
+- A role is marked Applied only after the provider presents verifiable submission evidence. Browser-local audit history retains bounded IDs, result codes, and fingerprints rather than contact data, resume text, JD text, answers, or URLs.
 
 The website is currently a **local-first prototype**. Browser-local drafts use a versioned storage schema but are not a hosted database. Bundled roles are marked as needing re-verification; only manually refreshed results that pass direct-link checks are shown as verified. This is not a continuously running job aggregation service.
 
 ## Run The Website
 
-Requirements: Node.js 20+. Local AI rewriting and user-triggered official-site search require an installed and authenticated Codex CLI.
+Requirements: Node.js 20+. Local AI rewriting and user-triggered official-site search require an installed and authenticated Codex CLI. Optional official-form automation also requires Google Chrome installed locally.
 
 ```bash
 git clone https://github.com/Akw0od/job-master.git
@@ -83,7 +87,7 @@ Outputs:
 
 1. Candidate facts remain user-owned and unverified claims must stay visibly unconfirmed.
 2. The Master Resume is immutable; AI and manual edits create reviewable derived versions.
-3. No final application submission without explicit approval for that exact company and role.
+3. No background or bulk submission. One-time auto-submit requires the exact company and role, a reviewed frozen payload, and a fresh authorization that expires after 10 minutes.
 4. Work authorization, sponsorship, EEOC, compensation, and other sensitive fields must never be guessed.
 5. Every AI rewrite shows the exact outbound data first: the selected full resume, an optional full job description, market, language, target role, and the user's instruction. The full resume may contain personal information such as a name, email address, or phone number, and that information is sent with the resume text. It does not additionally send local profile fields used for application assist, application tracking, other roles, or all browser storage. Official-site job search never sends a resume.
 6. Remembered AI-rewrite consent is browser-local and stores only a consent version and timestamp; it can be revoked from Local data. Processing location and retention are governed by the configured model provider, while local temporary files are deleted after the request.

@@ -3,8 +3,10 @@ import test from "node:test";
 import {
   applicationReceiptFreshnessMs,
   evaluateApplicationPreflight,
+  evaluateSubmissionPreflight,
   hasFreshOpenSourceReceipt,
 } from "../src/domain/applicationPreflight.js";
+import { authorizeSubmissionReview, createSubmissionReview } from "../src/domain/applicationSubmission.js";
 
 const job = (extra = {}) => ({
   id: "job-1", company: "Acme", role: "Engineer", applyUrl: "https://jobs.example.com/roles/123",
@@ -20,11 +22,12 @@ const readyInput = (extra = {}) => ({
   sensitiveLinesExcluded: true, packetSectionsAvailable: true, ...extra,
 });
 
-test("fresh verified source with explicit acknowledgements is ready and has manual-only invariants", () => {
+test("fresh verified source with explicit acknowledgements is ready and preserves reviewed automation invariants", () => {
   const result = evaluateApplicationPreflight(readyInput());
   assert.equal(result.ready, true);
   assert.deepEqual(result.blocking, []);
-  assert.ok(result.checks.some((check) => check.code === "no-auto-submit" && check.passed));
+  assert.ok(result.checks.some((check) => check.code === "no-background-submit" && check.passed));
+  assert.ok(result.checks.some((check) => check.code === "exact-review-before-submit" && check.passed));
   assert.equal(result.receiptFingerprint.includes("https://"), false);
 });
 
@@ -103,4 +106,108 @@ test("does not mutate input or leak sensitive content into the result", () => {
   assert.deepEqual(input, before);
   assert.equal(JSON.stringify(result).includes("jane@example.com"), false);
   assert.equal(JSON.stringify(result).includes("Highly private"), false);
+});
+
+test("review-submit requires the exact authorized payload, current receipt, page snapshot, and bridge", () => {
+  const base = readyInput();
+  const opening = evaluateApplicationPreflight(base);
+  const review = createSubmissionReview({
+    id: "submission-job-1",
+    applicationId: "job-1",
+    company: "Acme",
+    role: "Engineer",
+    provider: "official-company-site",
+    providerJobId: "unknown",
+    resumeVersionId: "job-v1",
+    receiptFingerprint: opening.receiptFingerprint,
+    pageFingerprint: "page-1234",
+    modeRequested: "review-submit",
+    createdAt: "2026-07-28T00:00:00.000Z",
+    fields: [{ id: "name", label: "Full name", category: "factual", sourceCode: "profile", reviewState: "confirmed", value: "Jane Doe" }],
+  });
+  const authorized = authorizeSubmissionReview(review, {
+    authorizationId: "auth-1",
+    company: "Acme",
+    role: "Engineer",
+    now: "2026-07-28T00:00:00.000Z",
+  }).session;
+  const ready = evaluateSubmissionPreflight({
+    ...base,
+    automationAvailable: true,
+    submitControlReady: true,
+    submissionReview: review,
+    authorizedSession: authorized,
+    acknowledgements: { ...base.acknowledgements, submit: true },
+  });
+  assert.equal(ready.ready, true);
+  assert.equal(JSON.stringify(ready).includes("Jane Doe"), false);
+
+  const unavailable = evaluateSubmissionPreflight({
+    ...base,
+    automationAvailable: false,
+    submitControlReady: true,
+    submissionReview: review,
+    authorizedSession: authorized,
+    acknowledgements: { ...base.acknowledgements, submit: true },
+  });
+  assert.ok(unavailable.blocking.includes("submission-bridge-available"));
+
+  const changed = createSubmissionReview({
+    ...review,
+    fields: [{ ...review.fields[0], value: "Changed" }],
+  });
+  const stale = evaluateSubmissionPreflight({
+    ...base,
+    automationAvailable: true,
+    submitControlReady: true,
+    submissionReview: changed,
+    authorizedSession: authorized,
+    acknowledgements: { ...base.acknowledgements, submit: true },
+  });
+  assert.ok(stale.blocking.includes("frozen-submission-payload"));
+});
+
+test("fill-only uses the same exact payload gate without requiring a submit control", () => {
+  const base = readyInput();
+  const opening = evaluateApplicationPreflight(base);
+  const review = createSubmissionReview({
+    id: "fill-job-1",
+    applicationId: "job-1",
+    company: "Acme",
+    role: "Engineer",
+    provider: "official-company-site",
+    providerJobId: "unknown",
+    resumeVersionId: "job-v1",
+    receiptFingerprint: opening.receiptFingerprint,
+    pageFingerprint: "page-1234",
+    modeRequested: "fill-only",
+    createdAt: "2026-07-28T00:00:00.000Z",
+    fields: [{ id: "name", label: "Full name", category: "factual", sourceCode: "profile", reviewState: "confirmed", value: "Jane Doe" }],
+  });
+  const authorized = authorizeSubmissionReview(review, {
+    authorizationId: "auth-fill-1",
+    company: "Acme",
+    role: "Engineer",
+    now: "2026-07-28T00:00:00.000Z",
+  }).session;
+  const ready = evaluateSubmissionPreflight({
+    ...base,
+    automationAvailable: true,
+    submitControlReady: false,
+    submissionReview: review,
+    authorizedSession: authorized,
+    acknowledgements: { ...base.acknowledgements, submit: true },
+  });
+  assert.equal(ready.ready, true);
+
+  const captcha = evaluateSubmissionPreflight({
+    ...base,
+    automationAvailable: true,
+    submitControlReady: false,
+    captchaPresent: true,
+    submissionReview: review,
+    authorizedSession: authorized,
+    acknowledgements: { ...base.acknowledgements, submit: true },
+  });
+  assert.ok(captcha.blocking.includes("captcha-cleared"));
 });

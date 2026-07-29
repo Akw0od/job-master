@@ -30,3 +30,31 @@ export function verifyOfficialJobUrls(urls) {
     body: JSON.stringify({ urls }),
   });
 }
+
+export function getApplicationAutomationCapabilities() {
+  return requestJson("/v1/applications/automation/health");
+}
+
+export function scanApplicationPage(payload) {
+  return requestJson("/v1/applications/automation/scan", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function executeReviewedApplication(payload) {
+  return requestJson("/v1/applications/automation/execute", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function closeApplicationAutomationSession(sessionId) {
+  return requestJson("/v1/applications/automation/close", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId }),
+  });
+}

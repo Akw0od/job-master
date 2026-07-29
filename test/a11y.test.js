@@ -6,6 +6,7 @@ import { getNextTabKey } from "../src/services/tabNavigation.js";
 
 const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
 const applicationAssistSource = readFileSync(new URL("../src/components/modals/ApplicationAssistModal.jsx", import.meta.url), "utf8");
+const submissionReviewSource = readFileSync(new URL("../src/components/modals/ApplicationSubmissionReviewModal.jsx", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
 test("navigation, filters, search, and status controls expose stable accessible state", () => {
@@ -25,6 +26,18 @@ test("navigation, filters, search, and status controls expose stable accessible 
   assert.match(appSource, /id="application-tab-panel"[\s\S]*?role="tabpanel"[\s\S]*?aria-labelledby=\{`application-tab-\$\{tabs\.indexOf\(activeTab\)\}`\}/);
   assert.match(appSource, /aria-label=\{t\("投递状态"\)\}/);
   assert.match(appSource, /Update \$\{job\.company\} \$\{job\.role\} status/);
+  assert.match(appSource, /<nav className="applications-subnav" aria-label=\{t\("求职进度视图"\)\}>/);
+  assert.match(appSource, /aria-pressed=\{applicationsView === view\}/);
+});
+
+test("one-time submission review remains a labeled modal with an explicit exact authorization", () => {
+  assert.match(submissionReviewSource, /role="dialog" aria-modal="true"/);
+  assert.match(submissionReviewSource, /aria-labelledby="submission-review-title"/);
+  assert.match(submissionReviewSource, /className="submission-exact-authorization"/);
+  assert.match(submissionReviewSource, /checked=\{authorizationConfirmed\}/);
+  assert.match(submissionReviewSource, /disabled=\{!submissionPreflight\?\.ready \|\| !authorizationConfirmed \|\| isExecuting\}/);
+  assert.match(submissionReviewSource, /工作授权|敏感字段/);
+  assert.match(styles, /\.submission-exact-authorization/);
 });
 
 test("narrow-screen modal, brand, and reduced-motion safeguards remain present", () => {

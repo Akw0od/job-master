@@ -2,6 +2,7 @@ import { isSpecificApplicationUrl } from "./applications.js";
 import { deriveOfficialJobProvider, normalizeReceiptUrl, normalizeSourceReceipt } from "./sourceReceipt.js";
 import { isPlaceholderResume } from "../resume/resumeModel.js";
 import { findDuplicateApplications } from "./applicationEvents.js";
+import { validateSubmissionAuthorization } from "./applicationSubmission.js";
 
 const text = (value, max = 160) => typeof value === "string" && value.trim().length <= max ? value.trim() : "";
 const object = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -116,8 +117,8 @@ export function evaluateApplicationPreflight(input = {}) {
   warn("provider-id-missing", Boolean(receipt.providerJobId));
   warn("sensitive-lines-excluded", sensitiveExclusionCount(source.sensitiveLinesExcluded) === 0);
   warn("packet-sections-unavailable", source.packetSectionsAvailable === true);
-  check(checks, "no-auto-fill", "invariant", true);
-  check(checks, "no-auto-submit", "invariant", true);
+  check(checks, "no-background-submit", "invariant", true);
+  check(checks, "exact-review-before-submit", "invariant", true);
   if (warnings.length && !warningAcknowledged(source)) blocking.push("warnings-acknowledgement-required");
   const receiptFingerprint = `pf1-${hash(JSON.stringify({
     jobId: text(job.id, 120), provider: receipt.provider, providerJobId: receipt.providerJobId,
@@ -125,4 +126,61 @@ export function evaluateApplicationPreflight(input = {}) {
     urlHash: hash(applicationUrl), receiptUrlHash: hash(receiptUrl),
   }))}`;
   return { ready: blocking.length === 0, blocking: [...new Set(blocking)], warnings: [...new Set(warnings)], checks, receiptFingerprint };
+}
+
+/**
+ * A second, stricter gate for one reviewed submission attempt.
+ * It returns fingerprints and bounded codes only; field values and answers never leave the session object.
+ */
+export function evaluateSubmissionPreflight(input = {}) {
+  const source = object(input);
+  const review = object(source.submissionReview);
+  const authorized = object(source.authorizedSession);
+  const opening = evaluateApplicationPreflight(source);
+  const checks = [...opening.checks];
+  const blocking = [...opening.blocking];
+  const block = (code, passed) => { check(checks, code, "blocking", passed); if (!passed) blocking.push(code); };
+  block("submission-bridge-available", source.automationAvailable === true);
+  const reviewedMode = ["fill-only", "review-submit"].includes(review.modeRequested)
+    && review.modeRequested === authorized.modeRequested;
+  block("reviewed-automation-mode", reviewedMode);
+  block("unique-submit-control", review.modeRequested !== "review-submit" || source.submitControlReady === true);
+  block("captcha-cleared", source.captchaPresent !== true);
+  block("frozen-submission-payload", Boolean(
+    review.payloadFingerprint
+    && authorized.payloadFingerprint
+    && review.payloadFingerprint === authorized.payloadFingerprint,
+  ));
+  block("source-receipt-fingerprint-match", Boolean(
+    opening.receiptFingerprint
+    && review.receiptFingerprint === opening.receiptFingerprint
+    && authorized.receiptFingerprint === opening.receiptFingerprint,
+  ));
+  block("resume-version-fingerprint-match", Boolean(
+    source.resumeVersion?.id
+    && review.resumeVersionId === source.resumeVersion.id
+    && authorized.resumeVersionId === source.resumeVersion.id,
+  ));
+  block("page-snapshot-reviewed", Boolean(
+    review.pageFingerprint
+    && authorized.pageFingerprint
+    && review.pageFingerprint === authorized.pageFingerprint,
+  ));
+  block("exact-submission-authorized", validateSubmissionAuthorization(
+    review,
+    authorized,
+    source.now ?? new Date().toISOString(),
+  ).valid);
+  block("single-submit-attempt", authorized.status === "authorized" && !authorized.attemptId);
+  block("submit-acknowledged", acknowledged(source, "submit"));
+  check(checks, "no-background-submit", "invariant", true);
+  check(checks, "no-captcha-bypass", "invariant", true);
+  return {
+    ready: blocking.length === 0,
+    blocking: [...new Set(blocking)],
+    warnings: opening.warnings,
+    checks,
+    receiptFingerprint: opening.receiptFingerprint,
+    payloadFingerprint: text(review.payloadFingerprint, 160),
+  };
 }

@@ -3,17 +3,17 @@ import assert from "node:assert/strict";
 import { formatSignalScore } from "../src/domain/jobDiscovery.js";
 import { translateUiText } from "../src/i18n.js";
 
-test("application-assist approval copy does not imply automatic form filling", () => {
-  const approval = "授权只启用本地字段复制和打开具体申请页；不会自动填表或提交，最终提交由本人完成。";
-  const missingLink = "当前岗位没有具体申请链接。补充具体职位链接后再核对并打开字段包。";
+test("application-assist approval copy distinguishes manual handoff from exact one-time automation", () => {
+  const approval = "手动模式只复制字段并打开申请页。自动化模式还需要审核官网实际字段，并对当前公司与岗位进行第二次单次授权。";
+  const exactAuthorization = "这次授权只绑定当前岗位、来源凭据、简历版本、页面字段和答案。任何内容变化都会使授权失效。";
 
   assert.equal(
     translateUiText(approval, "en"),
-    "Authorization only enables local field copying and opening the specific application page. It never auto-fills or submits; you complete the final submission.",
+    "Manual mode only copies fields and opens the application page. Automation also requires reviewing the actual official-site fields and a second one-time authorization for the exact company and role.",
   );
   assert.equal(
-    translateUiText(missingLink, "en"),
-    "This role has no specific application link. Add a specific role link before reviewing and opening its field packet.",
+    translateUiText(exactAuthorization, "en"),
+    "This authorization is bound to the exact role, source receipt, resume version, page fields, and answers. Any change invalidates it.",
   );
 });
 

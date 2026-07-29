@@ -3,15 +3,19 @@ import { hasCurrentJobScore, jobScoreAlgorithmVersion, normalizeRecommendationFu
 import { normalizeResumeRewriteConsent } from "../services/resumeRewriteConsent.js";
 import { withNormalizedSourceReceipt } from "../domain/sourceReceipt.js";
 import { normalizeApplicationEventsById } from "../domain/applicationEvents.js";
+import { normalizeApplicationAnswerLibrary } from "../domain/applicationAnswers.js";
+import { normalizeSubmissionSessionsById } from "../domain/applicationSubmission.js";
+import { normalizeApplicationOperationsById } from "../domain/applicationOperations.js";
 
-export const dashboardStorageKey = "job-master-dashboard-v7";
-export const previousDashboardStorageKey = "job-master-dashboard-v6";
-export const legacyDashboardStorageKey = "job-master-dashboard-v5";
-export const oldestDashboardStorageKey = "job-master-dashboard-v4";
-export const oldestLegacyDashboardStorageKey = "job-master-dashboard-v3";
-export const earliestDashboardStorageKey = "job-master-dashboard-v2";
-export const earliestLegacyDashboardStorageKey = "job-master-dashboard-v1";
-export const dashboardSchemaVersion = 7;
+export const dashboardStorageKey = "job-master-dashboard-v8";
+export const previousDashboardStorageKey = "job-master-dashboard-v7";
+export const legacyDashboardStorageKey = "job-master-dashboard-v6";
+export const oldestDashboardStorageKey = "job-master-dashboard-v5";
+export const oldestLegacyDashboardStorageKey = "job-master-dashboard-v4";
+export const earliestDashboardStorageKey = "job-master-dashboard-v3";
+export const earliestLegacyDashboardStorageKey = "job-master-dashboard-v2";
+export const originalDashboardStorageKey = "job-master-dashboard-v1";
+export const dashboardSchemaVersion = 8;
 export const dashboardStorageKeys = [
   dashboardStorageKey,
   previousDashboardStorageKey,
@@ -20,6 +24,7 @@ export const dashboardStorageKeys = [
   oldestLegacyDashboardStorageKey,
   earliestDashboardStorageKey,
   earliestLegacyDashboardStorageKey,
+  originalDashboardStorageKey,
 ];
 
 function normalizeApplications(applications) {
@@ -76,8 +81,11 @@ export function migrateDashboard(rawDashboard) {
     ...raw,
     schemaVersion: dashboardSchemaVersion,
     applications: normalizeApplications(raw.applications),
-    // V7 keeps the same dashboard envelope; event history is an optional, fail-closed field.
+    // V8 adds bounded application workspace state. Legacy dashboards start empty.
     applicationEventsById: normalizeApplicationEventsById(raw.applicationEventsById),
+    applicationAnswerLibrary: normalizeApplicationAnswerLibrary(raw.applicationAnswerLibrary),
+    submissionSessionsById: normalizeSubmissionSessionsById(raw.submissionSessionsById),
+    applicationOperationsById: normalizeApplicationOperationsById(raw.applicationOperationsById),
     recommendationMeta: normalizeRecommendationMeta(raw.recommendationMeta),
     liveJobsByDiscoveryKey: raw.liveJobsByDiscoveryKey && typeof raw.liveJobsByDiscoveryKey === "object"
       ? Object.fromEntries(Object.entries(raw.liveJobsByDiscoveryKey).map(([key, jobs]) => [

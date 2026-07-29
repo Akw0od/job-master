@@ -18,6 +18,85 @@ import {
   verifyJobUrls,
   verifyJobSearchResult,
 } from "../local-agent/jobSearch.mjs";
+import {
+  ApplicationAutomationRunner,
+  applicationAutomationCapabilities,
+  buildApplicationPageScan,
+  buildAutomationExecutionPlan,
+  normalizeApplicationScanPayload,
+} from "../local-agent/applicationAutomation.mjs";
+import { authorizeSubmissionReview, createSubmissionReview } from "../src/domain/applicationSubmission.js";
+
+function createFakeApplicationBrowser(applicationUrl, { failFirstFill = false } = {}) {
+  let currentUrl = applicationUrl;
+  let closed = false;
+  let submitClicks = 0;
+  let fillFailuresRemaining = failFirstFill ? 1 : 0;
+  const values = new Map();
+  const descriptor = {
+    title: "Apply to Example",
+    captchaPresent: false,
+    controls: [{
+      id: "full-name",
+      name: "full_name",
+      label: "Full name",
+      type: "text",
+      required: true,
+      sensitive: false,
+      category: "factual",
+      options: [],
+    }],
+    submitControls: [{ id: "submit-application", name: "", label: "Submit application", type: "submit" }],
+  };
+  const locator = (selector) => ({
+    count: async () => 1,
+    fill: async (value) => {
+      if (fillFailuresRemaining > 0) {
+        fillFailuresRemaining -= 1;
+        throw new Error("Synthetic fill failure.");
+      }
+      values.set(selector, value);
+    },
+    inputValue: async () => values.get(selector) ?? "",
+    isChecked: async () => false,
+    check: async () => { values.set(selector, "true"); },
+    uncheck: async () => { values.set(selector, "false"); },
+    selectOption: async (value) => { values.set(selector, typeof value === "string" ? value : value.label); },
+    click: async () => {
+      submitClicks += 1;
+      currentUrl = "https://example.com/jobs/qa-engineer-123/thank-you";
+    },
+    evaluate: async () => false,
+  });
+  const page = {
+    goto: async (url) => { currentUrl = url; },
+    url: () => currentUrl,
+    isClosed: () => closed,
+    close: async () => { closed = true; },
+    waitForLoadState: async () => {},
+    locator,
+    getByLabel: (label) => locator(`label:${label}`),
+    getByRole: (role, options) => locator(`${role}:${options.name}`),
+    evaluate: async (pageFunction) => {
+      const source = pageFunction.toString();
+      if (source.includes("const visible")) return structuredClone(descriptor);
+      if (source.includes("checkValidity")) return [];
+      if (source.includes("hasConfirmation")) {
+        return { title: "Application received", hasConfirmation: true, hasVisibleForm: false };
+      }
+      throw new Error("Unexpected fake-page evaluation.");
+    },
+  };
+  const context = {
+    newPage: async () => page,
+    close: async () => { closed = true; },
+  };
+  return {
+    context,
+    values,
+    submitClicks: () => submitClicks,
+  };
+}
 
 test("local agent ignores an incompatible user model configuration", () => {
   const args = buildCodexArgs("/tmp/jobmaster", "/tmp/jobmaster/response.json", {
@@ -81,6 +160,173 @@ test("job discovery prompt excludes candidate resume data", () => {
   assert.match(prompt, /official-site job discovery/);
   assert.doesNotMatch(prompt, /candidate resume/i);
   assert.match(prompt, /Do not use or request candidate personal data/);
+});
+
+test("application automation accepts only a concrete matching provider URL", () => {
+  const applicationUrl = "https://jobs.ashbyhq.com/acme/123e4567-e89b-42d3-a456-426614174000/application";
+  const normalized = normalizeApplicationScanPayload({
+    applicationUrl,
+    applicationId: "job-1",
+    sessionId: "scan-1",
+    provider: "ashby",
+    providerJobId: "123e4567-e89b-42d3-a456-426614174000",
+  });
+  assert.equal(normalized.applicationUrl, applicationUrl);
+  assert.throws(() => normalizeApplicationScanPayload({
+    applicationUrl: "https://example.com/careers",
+    applicationId: "job-1",
+    sessionId: "scan-1",
+    provider: "official-company-site",
+  }), /具体职位申请链接/);
+  assert.throws(() => normalizeApplicationScanPayload({
+    ...normalized,
+    provider: "lever",
+  }), /提供方不一致/);
+});
+
+test("application automation page scans expose bounded descriptors and bind execution to the reviewed page", () => {
+  const applicationUrl = "https://jobs.ashbyhq.com/acme/123e4567-e89b-42d3-a456-426614174000/application";
+  const scan = buildApplicationPageScan({
+    applicationId: "job-1",
+    provider: "ashby",
+    providerJobId: "123e4567-e89b-42d3-a456-426614174000",
+    finalUrl: applicationUrl,
+    title: "Apply",
+    controls: [
+      { id: "name", name: "name", label: "Full name", type: "text", required: true },
+      { id: "visa", name: "visa", label: "Visa sponsorship", type: "select", required: true, sensitive: true, options: ["Yes", "No"] },
+    ],
+    captchaPresent: false,
+    submitControls: [{ id: "submit", label: "Submit application", type: "submit" }],
+  });
+  assert.equal(scan.capabilities.submit, true);
+  assert.equal(scan.fields[1].category, "sensitive");
+  assert.equal(JSON.stringify(scan).includes("candidate@example.com"), false);
+
+  const review = createSubmissionReview({
+    id: "submission-job-1",
+    applicationId: "job-1",
+    company: "Acme",
+    role: "Engineer",
+    provider: "ashby",
+    providerJobId: scan.providerJobId,
+    resumeVersionId: "resume-1",
+    receiptFingerprint: "pf1-1234",
+    pageFingerprint: scan.pageFingerprint,
+    modeRequested: "review-submit",
+    createdAt: "2026-07-28T12:00:00.000Z",
+    fields: [
+      { ...scan.fields[0], reviewState: "confirmed", value: "Jane Doe" },
+      { ...scan.fields[1], reviewState: "page-confirmed", value: "must not persist" },
+    ],
+  });
+  const authorized = authorizeSubmissionReview(review, {
+    authorizationId: "auth-1",
+    company: "Acme",
+    role: "Engineer",
+    now: "2026-07-28T12:01:00.000Z",
+  }).session;
+  const plan = buildAutomationExecutionPlan(scan, authorized);
+  assert.deepEqual(plan.steps.map((step) => step.action).sort(), ["fill", "verify-existing"]);
+  assert.equal(plan.shouldSubmit, true);
+  assert.deepEqual(applicationAutomationCapabilities().providers, ["ashby", "greenhouse", "lever", "official-company-site"]);
+});
+
+test("application automation runner fills one reviewed payload and submits exactly once with confirmation evidence", async () => {
+  const applicationUrl = "https://example.com/jobs/qa-engineer-123";
+  const fake = createFakeApplicationBrowser(applicationUrl);
+  const runner = new ApplicationAutomationRunner({
+    profileDir: "/tmp/jobmaster-fake-profile",
+    launchContext: async () => fake.context,
+  });
+  const scan = await runner.scan({
+    sessionId: "scan-runner-1",
+    applicationId: "job-runner-1",
+    applicationUrl,
+    provider: "official-company-site",
+    providerJobId: "unknown",
+  });
+  const review = createSubmissionReview({
+    id: "submission-runner-1",
+    applicationId: "job-runner-1",
+    company: "Example",
+    role: "QA Engineer",
+    provider: "official-company-site",
+    providerJobId: "unknown",
+    resumeVersionId: "resume-runner-1",
+    receiptFingerprint: "pf1-runner",
+    pageFingerprint: scan.pageFingerprint,
+    modeRequested: "review-submit",
+    createdAt: "2026-07-28T12:00:00.000Z",
+    fields: [{ ...scan.fields[0], reviewState: "confirmed", value: "Jane Doe", sourceCode: "profile" }],
+  });
+  const authorized = authorizeSubmissionReview(review, {
+    authorizationId: "auth-runner-1",
+    company: "Example",
+    role: "QA Engineer",
+    now: "2026-07-28T12:01:00.000Z",
+  }).session;
+  const result = await runner.execute({
+    sessionId: scan.sessionId,
+    review,
+    authorizedSession: authorized,
+    attemptId: "attempt-runner-1",
+    now: "2026-07-28T12:02:00.000Z",
+  });
+
+  assert.equal(result.status, "submitted");
+  assert.equal(result.session.resultCode, "success-page");
+  assert.equal(fake.submitClicks(), 1);
+  assert.equal([...fake.values.values()].includes("Jane Doe"), true);
+  await runner.close();
+});
+
+test("application automation consumes an authorization before page interaction and rejects failure replays", async () => {
+  const applicationUrl = "https://example.com/jobs/qa-engineer-replay";
+  const fake = createFakeApplicationBrowser(applicationUrl, { failFirstFill: true });
+  const runner = new ApplicationAutomationRunner({
+    profileDir: "/tmp/jobmaster-fake-replay-profile",
+    launchContext: async () => fake.context,
+  });
+  const scan = await runner.scan({
+    sessionId: "scan-runner-replay",
+    applicationId: "job-runner-replay",
+    applicationUrl,
+    provider: "official-company-site",
+    providerJobId: "unknown",
+  });
+  const review = createSubmissionReview({
+    id: "submission-runner-replay",
+    applicationId: "job-runner-replay",
+    company: "Example",
+    role: "QA Engineer",
+    provider: "official-company-site",
+    providerJobId: "unknown",
+    resumeVersionId: "resume-runner-replay",
+    receiptFingerprint: "pf1-runner-replay",
+    pageFingerprint: scan.pageFingerprint,
+    modeRequested: "review-submit",
+    createdAt: "2026-07-28T12:00:00.000Z",
+    fields: [{ ...scan.fields[0], reviewState: "confirmed", value: "Jane Doe", sourceCode: "profile" }],
+  });
+  const authorized = authorizeSubmissionReview(review, {
+    authorizationId: "auth-runner-replay",
+    company: "Example",
+    role: "QA Engineer",
+    now: "2026-07-28T12:01:00.000Z",
+  }).session;
+  const payload = {
+    sessionId: scan.sessionId,
+    review,
+    authorizedSession: authorized,
+    attemptId: "attempt-runner-replay",
+    now: "2026-07-28T12:02:00.000Z",
+  };
+
+  await assert.rejects(() => runner.execute(payload), /Synthetic fill failure/);
+  await assert.rejects(() => runner.execute(payload), /已经执行过/);
+  assert.equal(fake.submitClicks(), 0);
+  await runner.close();
 });
 
 test("verified live jobs separate generated JD summaries from official snapshots", () => {

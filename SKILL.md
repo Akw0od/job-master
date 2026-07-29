@@ -23,8 +23,10 @@ This skill turns a target JD into an application packet: tailored resume focus, 
 4. For every JD, generate a packet first and ask the user to review it.
 5. Browser automation may fill fields after review, then stop at the final review screen.
 6. Final submission requires explicit approval for that exact company, role, and application.
-7. Default resume output is a clean one-page PDF with no decorative color, Experience before Projects, compact horizontal section rules, aligned left edges, and role-specific evidence reuse.
-8. After a confirmed submission, update the configured tracker. For China-facing users or products, prefer Feishu Bitable as the operational tracker/database. Do not create spreadsheet trackers unless explicitly requested.
+7. A submission approval is single-use, expires within 10 minutes, and binds the frozen field payload, resume version, source receipt, and scanned page. Any change requires a new review and approval.
+8. Never run background or bulk submissions, bypass CAPTCHA, infer sensitive answers, or treat a click as success. Stop on changed pages, missing required fields, attachments, ambiguous submit controls, or unsupported providers; record Applied only with provider-facing confirmation evidence.
+9. Default resume output is a clean one-page PDF with no decorative color, Experience before Projects, compact horizontal section rules, aligned left edges, and role-specific evidence reuse.
+10. After a confirmed submission, update the configured tracker. For China-facing users or products, prefer Feishu Bitable as the operational tracker/database. Do not create spreadsheet trackers unless explicitly requested.
 
 ## Quickstart
 
@@ -104,7 +106,7 @@ Follow the candidate's chosen reference resume format as a layout target, not as
 
 ### 5. Fill Forms Safely
 
-Use browser automation only after the candidate has reviewed the packet. Fill fields from `autofill_data.json`, attach the reviewed resume if requested, and stop at the final review screen. State clearly what is ready and what remains for the candidate to approve.
+Use browser automation only after the candidate has reviewed the packet. Fill fields from `autofill_data.json` and stop at the final review screen by default. Attachments remain manual unless the candidate explicitly chooses the exact reviewed file. If the candidate explicitly approves submission for the exact company, role, frozen payload, resume version, source receipt, and scanned page, perform at most one attempt before the authorization expires. Stop on any mismatch, CAPTCHA, missing or sensitive field, unsupported control, or ambiguous submit action. State clearly what was filled, what remains manual, and whether provider-facing confirmation was actually observed.
 
 ### 6. Track Submissions
 
@@ -146,4 +148,5 @@ A passing run verifies role classification, evidence selection, CLI output writi
 - If selected evidence feels generic, add the full JD and rerun with a more specific role hint.
 - If the JD includes hard requirements not in the profile context, flag the gap instead of hiding it.
 - If a job portal asks legally sensitive questions, stop and ask the candidate to answer directly.
-- If the final screen has a submit button, stop and request exact approval before clicking.
+- If the final screen has a submit button, stop and request exact approval before clicking. Never reuse that approval for another attempt or changed page.
+- If the provider does not present verifiable confirmation after a click, report the result as manual review required rather than submitted.

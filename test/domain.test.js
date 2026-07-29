@@ -636,7 +636,7 @@ test("dashboard storage migrates v5 resume lineage without fabricating or droppi
   ]);
   const storage = { getItem: (key) => values.get(key) ?? null };
   const migrated = readDashboard(storage);
-  assert.equal(migrated.schemaVersion, 7);
+  assert.equal(migrated.schemaVersion, dashboardSchemaVersion);
   assert.deepEqual(migrated.resumeVersions[0].patchAudit, patchAudit);
   assert.equal(migrated.resumeVersions[0].parentVersionId, "master-resume");
 });

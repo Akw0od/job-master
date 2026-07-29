@@ -8,8 +8,36 @@ import {
   readEncryptedBackupFile,
   validateBackupEnvelope,
 } from "../src/services/dashboardBackup.js";
+import { authorizeSubmissionReview, createSubmissionReview } from "../src/domain/applicationSubmission.js";
 
 const password = "safe backup password";
+const submissionReview = createSubmissionReview({
+  id: "submission-imported-receipt",
+  applicationId: "imported-receipt",
+  company: "Example",
+  role: "Engineer",
+  provider: "official-company-site",
+  providerJobId: "unknown",
+  resumeVersionId: "direction-v2",
+  receiptFingerprint: "pf1-abcd",
+  pageFingerprint: "page-abcd",
+  modeRequested: "fill-only",
+  createdAt: "2026-07-24T00:02:00.000Z",
+  fields: [{
+    id: "full-name",
+    label: "Full name",
+    category: "factual",
+    sourceCode: "profile",
+    reviewState: "confirmed",
+    value: "Ada Lovelace",
+  }],
+});
+const authorizedSubmission = authorizeSubmissionReview(submissionReview, {
+  authorizationId: "auth-backup-1",
+  company: "Example",
+  role: "Engineer",
+  now: "2026-07-24T00:03:00.000Z",
+}).session;
 const dashboard = {
   applications: [{
     id: "imported-receipt",
@@ -65,6 +93,32 @@ const dashboard = {
     patchAudit: [{ patchId: "patch-v2-a1b2", before: "Ada Lovelace", after: "Ada Lovelace, reliable systems engineer", decision: "accepted" }],
   }],
   candidateProfile: { name: "Ada Lovelace", email: "ada@example.com" },
+  applicationAnswerLibrary: {
+    schemaVersion: 1,
+    answers: [{
+      schemaVersion: 1,
+      id: "answer-1",
+      question: "Why this role?",
+      category: "narrative",
+      state: "confirmed",
+      answer: "A truthful candidate-authored answer.",
+      sourceCode: "user-confirmed",
+      updatedAt: "2026-07-24T00:00:00.000Z",
+    }],
+  },
+  submissionSessionsById: { [authorizedSubmission.id]: authorizedSubmission },
+  applicationOperationsById: {
+    "imported-receipt": {
+      schemaVersion: 1,
+      applicationId: "imported-receipt",
+      followUpAt: "2026-07-31T00:00:00.000Z",
+      interview: {
+        scheduledAt: "2026-08-01T00:00:00.000Z",
+        stage: "Hiring manager",
+        notes: "Candidate-authored prep note",
+      },
+    },
+  },
 };
 
 test("encrypted local dashboard backup round-trips without plaintext resume or profile data", async () => {
@@ -89,6 +143,9 @@ test("encrypted local dashboard backup round-trips without plaintext resume or p
   assert.deepEqual(restored.resumeVersions[1].lineage, dashboard.resumeVersions[1].lineage);
   assert.deepEqual(restored.applicationEventsById["imported-receipt"].map((event) => event.id), ["status-1"]);
   assert.equal(JSON.stringify(restored.applicationEventsById).includes("ada@example.com"), false);
+  assert.equal(restored.applicationAnswerLibrary.answers[0].answer, "A truthful candidate-authored answer.");
+  assert.equal(restored.submissionSessionsById[authorizedSubmission.id].authorizationId, "auth-backup-1");
+  assert.equal(restored.applicationOperationsById["imported-receipt"].interview.stage, "Hiring manager");
 });
 
 test("backup rejects wrong passwords, tampering, unsupported envelopes, and oversized files", async () => {

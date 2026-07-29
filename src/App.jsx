@@ -28,6 +28,7 @@ import {
 import "./styles.css";
 import { ResumeDocument } from "./components/ResumeDocument";
 import { ApplicationAssistModal } from "./components/modals/ApplicationAssistModal";
+import { ApplicationSubmissionReviewModal } from "./components/modals/ApplicationSubmissionReviewModal";
 import { EditModal } from "./components/modals/EditModal";
 import { CustomDirectionModal, ImportJobModal } from "./components/modals/JobInputModals";
 import { LocalDataModal } from "./components/modals/LocalDataModal";
@@ -45,13 +46,34 @@ import {
 import {
   appendApplicationOpened,
   appendPreflightPassed,
+  appendSubmissionAuthorized,
+  appendSubmissionCompleted,
+  appendSubmissionFailed,
+  appendSubmissionPaused,
+  appendSubmissionStarted,
   getApplicationEvents,
   getApplicationStatusRevertibility,
   normalizeApplicationEventState,
   revertLatestApplicationStatusChange,
   transitionApplicationStatus,
 } from "./domain/applicationEvents";
-import { evaluateApplicationPreflight, hasFreshOpenSourceReceipt } from "./domain/applicationPreflight";
+import { evaluateApplicationPreflight, evaluateSubmissionPreflight, hasFreshOpenSourceReceipt } from "./domain/applicationPreflight";
+import { findReusableApplicationAnswer, removeApplicationAnswer, upsertApplicationAnswer } from "./domain/applicationAnswers";
+import {
+  authorizeSubmissionReview,
+  createSubmissionReview,
+  submissionAuditMetadata,
+} from "./domain/applicationSubmission";
+import {
+  addBusinessDays,
+  buildApplicationAnalytics,
+  buildInterviewPrepOutline,
+  buildTodayActionQueue,
+  recordApplicationFollowUp,
+  recordConfirmedSubmission,
+  scheduleApplicationFollowUp,
+  updateApplicationInterview,
+} from "./domain/applicationOperations";
 import {
   analyzeJobForResume,
   applyLiveUrlVerificationResults,
@@ -75,6 +97,10 @@ import {
   requestResumeRewrite as requestResumeRewriteFromAgent,
   searchOfficialJobs,
   verifyOfficialJobUrls,
+  closeApplicationAutomationSession,
+  executeReviewedApplication,
+  getApplicationAutomationCapabilities,
+  scanApplicationPage,
 } from "./services/localAgent";
 import {
   closeReservedApplicationWindow,
@@ -184,6 +210,47 @@ function formatReceiptTimestamp(value, uiLanguage, t) {
     : t("未提供");
 }
 
+function toDateTimeLocalValue(value) {
+  const timestamp = Date.parse(String(value ?? ""));
+  if (!Number.isFinite(timestamp)) return "";
+  const date = new Date(timestamp - new Date(timestamp).getTimezoneOffset() * 60_000);
+  return date.toISOString().slice(0, 16);
+}
+
+function applicationEventLabel(event, t) {
+  if (event.type === "status.changed") return `${t(event.fromStatus)} → ${t(event.toStatus)}`;
+  const labels = {
+    "status.reverted": "已撤销最近状态变更",
+    "preflight.passed": "申请前检查已通过",
+    "application.opened": "已打开具体申请页",
+    "submission.authorized": "已创建单次投递授权",
+    "submission.started": "单次自动化已开始",
+    "submission.completed": "官网已确认投递成功",
+    "submission.paused": "自动化已停在人工处理点",
+    "submission.failed": "单次自动化执行失败",
+  };
+  return t(labels[event.type] ?? "申请记录已更新");
+}
+
+function applicationActionLabel(actionCode, t) {
+  const labels = {
+    "prepare-interview": "准备面试",
+    "follow-up": "跟进已到期",
+    "track-application": "查看投递进度",
+    "verify-role": "重新核验岗位",
+    "tailor-resume": "准备岗位版简历",
+    "review-application": "审核申请包",
+  };
+  return t(labels[actionCode] ?? "处理下一步");
+}
+
+function applicationFollowUpDraft(job, uiLanguage) {
+  if (uiLanguage === "en") {
+    return `Subject: Following up on my ${job.role} application\n\nHello ${job.company} Hiring Team,\n\nI’m following up on my application for the ${job.role} role. I remain interested in the opportunity and would be glad to provide any additional information that would be helpful.\n\nThank you for your time and consideration.`;
+  }
+  return `主题：跟进 ${job.role} 职位申请\n\n${job.company} 招聘团队您好：\n\n想跟进一下我对 ${job.role} 职位的申请。我仍然非常关注这个机会；如需补充任何材料或信息，我很乐意提供。\n\n感谢您的时间与考虑。`;
+}
+
 function resumeDecisionKey(scope, change, index) {
   return `${scope}:${change?.patchId ?? index}`;
 }
@@ -268,6 +335,32 @@ function StatusDot({ status, statusKey }) {
 
 function createLocalId(prefix) {
   return `${prefix}-${Date.now()}`;
+}
+
+function reviewedAutomationFields(scan, candidateProfile, answerLibrary) {
+  const profile = candidateProfile ?? {};
+  return (scan?.fields ?? []).map((field) => {
+    const label = String(field.label ?? "").normalize("NFKC").toLocaleLowerCase();
+    const manual = field.category === "sensitive"
+      || ["file", "checkbox", "radio", "select"].includes(field.type);
+    if (manual) return { ...field, value: "", reviewState: "manual-required", sourceCode: "page-manual" };
+    const reusable = findReusableApplicationAnswer(answerLibrary, field.label);
+    if (reusable) {
+      return { ...field, value: reusable.answer, reviewState: "confirmed", sourceCode: "answer-library" };
+    }
+    const profileMappings = [
+      [/(?:full\s*name|legal\s*name|姓名|全名)/i, profile.name],
+      [/(?:e-?mail|邮箱)/i, profile.email],
+      [/(?:phone|mobile|telephone|电话|手机)/i, profile.phone],
+      [/(?:location|city|所在地|城市)/i, profile.location],
+      [/(?:linkedin|个人主页)/i, profile.linkedin],
+    ];
+    const profileMatch = profileMappings.find(([pattern, value]) => pattern.test(label) && String(value ?? "").trim());
+    if (profileMatch) {
+      return { ...field, value: String(profileMatch[1]).trim(), reviewState: "confirmed", sourceCode: "profile" };
+    }
+    return { ...field, value: "", reviewState: "unresolved", sourceCode: field.category === "narrative" ? "answer-library" : "page-manual" };
+  });
 }
 
 const targetDirectionOptions = [
@@ -415,6 +508,22 @@ export function App() {
   const [applicationAssists, setApplicationAssists] = useState(() => savedDashboard.applicationAssists ?? {});
   const [isApplicationAssistOpen, setIsApplicationAssistOpen] = useState(false);
   const [isApplicationAssistLaunching, setIsApplicationAssistLaunching] = useState(false);
+  const [applicationsView, setApplicationsView] = useState(() => (
+    ["today", "applications", "interviews", "insights"].includes(savedDashboard.applicationsView)
+      ? savedDashboard.applicationsView
+      : "today"
+  ));
+  const [applicationAnswerLibrary, setApplicationAnswerLibrary] = useState(() => savedDashboard.applicationAnswerLibrary ?? { schemaVersion: 1, answers: [] });
+  const [submissionSessionsById, setSubmissionSessionsById] = useState(() => savedDashboard.submissionSessionsById ?? {});
+  const [applicationOperationsById, setApplicationOperationsById] = useState(() => savedDashboard.applicationOperationsById ?? {});
+  const [applicationAutomationCapabilities, setApplicationAutomationCapabilities] = useState(null);
+  const [applicationAutomationMode, setApplicationAutomationMode] = useState("manual-handoff");
+  const [applicationAutomationScan, setApplicationAutomationScan] = useState(null);
+  const [submissionReview, setSubmissionReview] = useState(null);
+  const [isSubmissionReviewOpen, setIsSubmissionReviewOpen] = useState(false);
+  const [isApplicationAutomationScanning, setIsApplicationAutomationScanning] = useState(false);
+  const [isSubmissionExecuting, setIsSubmissionExecuting] = useState(false);
+  const [isSubmissionAuthorizationConfirmed, setIsSubmissionAuthorizationConfirmed] = useState(false);
   const [isAgentThinking, setIsAgentThinking] = useState(false);
   const [agentSuggestion, setAgentSuggestion] = useState(() => savedDashboard.agentSuggestion ?? null);
   const [resumeRewriteConsent, setResumeRewriteConsent] = useState(() => normalizeResumeRewriteConsent(savedDashboard.resumeRewriteConsent));
@@ -638,9 +747,48 @@ export function App() {
     sensitiveLinesExcluded: applicationFieldPacket.groups.reduce((count, group) => count + (group.excludedLineCount ?? 0), 0),
     packetSectionsAvailable: applicationFieldPacket.groups.every((group) => group.fields.length > 0),
   }) : null;
+  const previewSubmissionAuthorization = submissionReview?.status === "review-ready" && selected
+    ? authorizeSubmissionReview(submissionReview, {
+        authorizationId: `preview-${submissionReview.id}`,
+        company: selected.company,
+        role: selected.role,
+      }).session
+    : null;
+  const submissionPreflight = selected && submissionReview && previewSubmissionAuthorization
+    ? evaluateSubmissionPreflight({
+        applicationId: selected.id,
+        job: selected,
+        applicationUrl: selected.applyUrl || (selected.source === "手动 JD" ? selected.url : ""),
+        resumeVersion: selectedJobResumeVersion,
+        resumeVersions,
+        hasUnsavedResumeChanges: hasUnsavedSelectedJobResumeChanges,
+        contact: candidateProfile,
+        contactValid: applicationContactValidation.ready,
+        authorizedGroups: Object.entries(applicationAssistAuthorization).filter(([, allowed]) => allowed).map(([group]) => group),
+        authorizedFieldCount: applicationFieldPacket.groups.filter((group) => applicationAssistAuthorization[group.id]).flatMap((group) => group.fields).length,
+        contactAuthorized: applicationAssistAuthorization.contact === true,
+        acknowledgements: { ...applicationAssistAcknowledgements, submit: isSubmissionAuthorizationConfirmed },
+        applications,
+        applicationEventsById,
+        sensitiveLinesExcluded: applicationFieldPacket.groups.reduce((count, group) => count + (group.excludedLineCount ?? 0), 0),
+        packetSectionsAvailable: applicationFieldPacket.groups.every((group) => group.fields.length > 0),
+        automationAvailable: applicationAutomationCapabilities?.available === true,
+        submitControlReady: applicationAutomationScan?.capabilities?.submit === true,
+        captchaPresent: applicationAutomationScan?.captchaPresent === true,
+        submissionReview,
+        authorizedSession: previewSubmissionAuthorization,
+      })
+    : null;
   const selectedApplicationEvents = selected ? getApplicationEvents(applicationState, selected.id) : [];
   const selectedStatusRevertibility = selected ? getApplicationStatusRevertibility(applicationState, selected.id) : { canRevert: false };
   const selectedNormalizedStatus = selected ? normalizeApplicationStatus(selected.status) : "";
+  const todayActionQueue = buildTodayActionQueue({
+    applications,
+    resumeVersions,
+    operationsById: applicationOperationsById,
+  });
+  const applicationAnalytics = buildApplicationAnalytics(applications);
+  const interviewJobs = trackedJobs.filter((job) => normalizeApplicationStatus(job.status) === "面试");
 
   const buildDashboardSnapshot = useCallback(() => (
     {
@@ -666,6 +814,10 @@ export function App() {
       resumePageSize,
       candidateProfile,
       applicationAssists,
+      applicationsView,
+      applicationAnswerLibrary,
+      submissionSessionsById,
+      applicationOperationsById,
       discoveryCycles,
       seenJobIdsByMarket,
       liveJobsByDiscoveryKey,
@@ -675,13 +827,14 @@ export function App() {
       resumeRewriteConsent,
     }
   ), [
-    activeResumeTab, activeResumeVersionId, agentSuggestion, applicationAssists,
-    applicationEventsById, applications, candidateProfile, customDirections,
+    activeResumeTab, activeResumeVersionId, agentSuggestion, applicationAnswerLibrary,
+    applicationAssists, applicationEventsById, applicationOperationsById, applications,
+    applicationsView, candidateProfile, customDirections,
     discoveryCycles, employmentType, liveJobsByDiscoveryKey, notesByJobId,
     outputLanguage, profileReady, recommendationMeta, resumeChangeDecisions,
     resumeFile, resumePageSize, resumeRewriteConsent, resumeVersions, reviewDrafts, reviewStatus,
-    seenJobIdsByMarket, selectedDirection, selectedId, step, targetMarket,
-    targetRole, uiLanguage,
+    seenJobIdsByMarket, selectedDirection, selectedId, step, submissionSessionsById,
+    targetMarket, targetRole, uiLanguage,
   ]);
 
   const formattedLastSavedAt = lastSavedAt
@@ -1074,7 +1227,9 @@ export function App() {
         setActiveEditor(null);
       } else if (isImportOpen) {
         setIsImportOpen(false);
-      } else if (isApplicationAssistOpen && !isApplicationAssistLaunching) {
+      } else if (isSubmissionReviewOpen && !isSubmissionExecuting) {
+        setIsSubmissionReviewOpen(false);
+      } else if (isApplicationAssistOpen && !isApplicationAssistLaunching && !isApplicationAutomationScanning) {
         setIsApplicationAssistOpen(false);
       } else if (isCustomDirectionOpen) {
         setIsCustomDirectionOpen(false);
@@ -1083,7 +1238,38 @@ export function App() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [activeEditor, isImportOpen, isApplicationAssistOpen, isApplicationAssistLaunching, isCustomDirectionOpen]);
+  }, [
+    activeEditor, isApplicationAssistOpen, isApplicationAssistLaunching, isApplicationAutomationScanning,
+    isCustomDirectionOpen, isImportOpen, isSubmissionExecuting, isSubmissionReviewOpen,
+  ]);
+
+  useEffect(() => {
+    if (!isApplicationAssistOpen || applicationAutomationCapabilities) return;
+    let active = true;
+    getApplicationAutomationCapabilities()
+      .then((capabilities) => {
+        if (active) setApplicationAutomationCapabilities(capabilities);
+      })
+      .catch(() => {
+        if (active) setApplicationAutomationCapabilities({ available: false, providers: [], modes: [] });
+      });
+    return () => { active = false; };
+  }, [applicationAutomationCapabilities, isApplicationAssistOpen]);
+
+  useEffect(() => {
+    if (!isApplicationAssistOpen || applicationAutomationMode === "manual-handoff"
+      || !applicationAutomationCapabilities || !selected) return;
+    const provider = selected.sourceReceipt?.provider ?? "unknown";
+    if (!applicationAutomationCapabilities.providers?.includes(provider)) {
+      setApplicationAutomationMode("manual-handoff");
+      setIsApplicationAssistConfirmed(false);
+    }
+  }, [
+    applicationAutomationCapabilities,
+    applicationAutomationMode,
+    isApplicationAssistOpen,
+    selected,
+  ]);
 
   useEffect(() => {
     document.documentElement.lang = uiLanguage === "en" ? "en" : "zh-CN";
@@ -1272,6 +1458,15 @@ export function App() {
     isApplicationAssistLaunching,
     isApplicationAssistOpen,
   ]);
+
+  useEffect(() => {
+    if (isSubmissionExecuting || !applicationAutomationScan || applicationAutomationScan.applicationId === selected?.id) return;
+    closeApplicationAutomationSession(applicationAutomationScan.sessionId).catch(() => {});
+    setApplicationAutomationScan(null);
+    setSubmissionReview(null);
+    setIsSubmissionReviewOpen(false);
+    setIsSubmissionAuthorizationConfirmed(false);
+  }, [applicationAutomationScan, isSubmissionExecuting, selected?.id]);
 
   useEffect(() => {
     if (!selectedNormalizedStatus) return;
@@ -1762,10 +1957,57 @@ export function App() {
     setIsQueueCollapsed(true);
   }
 
+  function updateApplicationStatus(applicationId, status, updated = "刚刚更新") {
+    if (!applicationId) return;
+    setApplicationState((current) => transitionApplicationStatus(current, applicationId, status, { updated }).state);
+    if (status === "已投递") {
+      setApplicationOperationsById((current) => {
+        if (current[applicationId]?.followUpAt) return current;
+        const followUpAt = addBusinessDays(new Date().toISOString(), 5);
+        return scheduleApplicationFollowUp(current, applicationId, followUpAt).operationsById;
+      });
+    }
+  }
+
+  function updateInterviewField(job, field, value) {
+    if (!job?.id) return;
+    setApplicationOperationsById((current) => {
+      const existing = current[job.id]?.interview ?? {};
+      const nextValue = field === "scheduledAt" && value
+        ? new Date(value).toISOString()
+        : value;
+      return updateApplicationInterview(current, job.id, {
+        ...existing,
+        stage: existing.stage || "面试",
+        [field]: nextValue,
+      }).operationsById;
+    });
+  }
+
+  async function copyApplicationFollowUp(job) {
+    if (!navigator.clipboard?.writeText) {
+      setToast(t("无法复制跟进模板。请检查浏览器剪贴板权限后重试。"));
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(applicationFollowUpDraft(job, uiLanguage));
+      setToast(t("已复制跟进模板。发送前请补充收件人与具体上下文。"));
+    } catch {
+      setToast(t("无法复制跟进模板。请检查浏览器剪贴板权限后重试。"));
+    }
+  }
+
+  function markApplicationFollowedUp(job) {
+    setApplicationOperationsById((current) => (
+      recordApplicationFollowUp(current, job.id).operationsById
+    ));
+    setToast(t("已标记为本人完成跟进；此操作不会发送邮件。"));
+  }
+
   function updateSelectedReviewStatus(status) {
     setReviewStatus(status);
     if (!selected?.id) return;
-    setApplicationState((current) => transitionApplicationStatus(current, selected.id, status, { updated: "刚刚更新" }).state);
+    updateApplicationStatus(selected.id, status);
   }
 
   function revertSelectedReviewStatus() {
@@ -1803,6 +2045,32 @@ export function App() {
       acknowledgements: applicationAssistAcknowledgements, applications, applicationEventsById,
       sensitiveLinesExcluded: applicationFieldPacket.groups.reduce((count, group) => count + (group.excludedLineCount ?? 0), 0),
       packetSectionsAvailable: applicationFieldPacket.groups.every((group) => group.fields.length > 0),
+    });
+  }
+
+  function evaluateCurrentSubmissionPreflight(job, review, authorizedSession) {
+    return evaluateSubmissionPreflight({
+      applicationId: job.id,
+      job,
+      applicationUrl: job.applyUrl || (job.source === "手动 JD" ? job.url : ""),
+      resumeVersion: selectedJobResumeVersion,
+      resumeVersions,
+      hasUnsavedResumeChanges: hasUnsavedSelectedJobResumeChanges,
+      contact: candidateProfile,
+      contactValid: applicationContactValidation.ready,
+      authorizedGroups: Object.entries(applicationAssistAuthorization).filter(([, allowed]) => allowed).map(([group]) => group),
+      authorizedFieldCount: applicationFieldPacket.groups.filter((group) => applicationAssistAuthorization[group.id]).flatMap((group) => group.fields).length,
+      contactAuthorized: applicationAssistAuthorization.contact === true,
+      acknowledgements: { ...applicationAssistAcknowledgements, submit: true },
+      applications,
+      applicationEventsById,
+      sensitiveLinesExcluded: applicationFieldPacket.groups.reduce((count, group) => count + (group.excludedLineCount ?? 0), 0),
+      packetSectionsAvailable: applicationFieldPacket.groups.every((group) => group.fields.length > 0),
+      automationAvailable: applicationAutomationCapabilities?.available === true,
+      submitControlReady: applicationAutomationScan?.capabilities?.submit === true,
+      captchaPresent: applicationAutomationScan?.captchaPresent === true,
+      submissionReview: review,
+      authorizedSession,
     });
   }
 
@@ -1917,7 +2185,7 @@ export function App() {
   }
 
   function prepareApplicationAssist() {
-    if (!selected || isApplicationAssistLaunching) return;
+    if (!selected || isApplicationAssistLaunching || isApplicationAutomationScanning || isSubmissionExecuting) return;
     if (!selectedJobResumeVersion) {
       setActiveTab("定制简历");
       setToast(t("先生成并保存这份岗位版简历，再核对本地字段包。"));
@@ -1927,11 +2195,12 @@ export function App() {
     setApplicationAssistAuthorization({ contact: false, education: false, experience: false });
     setIsApplicationAssistConfirmed(false);
     setApplicationAssistAcknowledgements({ truth: false, sensitive: false, unknownQuestions: false, warnings: false, duplicate: false });
+    setIsSubmissionAuthorizationConfirmed(false);
     setIsApplicationAssistOpen(true);
   }
 
   function closeApplicationAssist() {
-    if (isApplicationAssistLaunching) return;
+    if (isApplicationAssistLaunching || isApplicationAutomationScanning) return;
     setIsApplicationAssistOpen(false);
   }
 
@@ -1993,10 +2262,239 @@ export function App() {
       })) {
         setApplicationAssists((current) => ({ ...current, [job.id]: audit }));
         setIsApplicationAssistOpen(false);
-        setToast(t("已打开职位申请页。字段包仅供逐项复制，不会自动填表；最终提交必须由本人完成。"));
+        setToast(t("已打开职位申请页。当前选择的是手动流程，最终填写与提交由本人完成。"));
       }
     } finally {
       setIsApplicationAssistLaunching(false);
+    }
+  }
+
+  async function scanApplicationForAutomation() {
+    if (!selected || !selectedJobResumeVersion || isApplicationAutomationScanning
+      || !canLaunchCurrentApplicationAssist || !applicationPreflight?.ready) return;
+    if (applicationAutomationMode === "manual-handoff" || applicationAutomationCapabilities?.available !== true) {
+      setToast(t("本地自动化桥尚未连接；请使用手动官网流程。"));
+      return;
+    }
+    const applicationUrl = selected.applyUrl || (selected.source === "手动 JD" ? selected.url : "");
+    if (!isSpecificApplicationUrl(applicationUrl)) {
+      setToast(t("当前岗位没有具体申请链接。补充具体职位链接后再扫描官网表单。"));
+      return;
+    }
+    const sessionId = applicationAutomationScan?.applicationId === selected.id
+      ? applicationAutomationScan.sessionId
+      : `scan-${globalThis.crypto?.randomUUID?.() ?? createLocalId("application")}`;
+    setIsApplicationAutomationScanning(true);
+    try {
+      const scan = await scanApplicationPage({
+        sessionId,
+        applicationId: selected.id,
+        applicationUrl,
+        provider: selected.sourceReceipt?.provider === "unknown" ? "" : selected.sourceReceipt?.provider,
+        providerJobId: selected.sourceReceipt?.providerJobId,
+      });
+      const verificationCheck = {
+        url: applicationUrl,
+        state: scan.verification?.state === "open" ? "open" : "unknown",
+        checkedAt: scan.verification?.checkedAt ?? new Date().toISOString(),
+        reason: scan.verification?.reason ?? "network-or-inconclusive",
+      };
+      const verifiedJob = {
+        ...selected,
+        verificationStatus: verificationCheck.state === "open" ? "verified" : "unknown",
+        verifiedAt: verificationCheck.checkedAt,
+        sourceReceipt: updateSourceReceiptVerification(selected, verificationCheck),
+      };
+      const refreshedPreflight = evaluateCurrentApplicationPreflight(verifiedJob);
+      setApplications((current) => current.map((job) => job.id === selected.id ? verifiedJob : job));
+      applyLiveUrlChecks([verificationCheck]);
+      if (!refreshedPreflight.ready) {
+        setIsApplicationAssistConfirmed(false);
+        setToast(t("官网重新核验后申请前检查发生变化，请重新确认。"));
+        return;
+      }
+      setApplicationAutomationScan(scan);
+      if (scan.captchaPresent) {
+        setToast(t("检测到人机验证。请在专用 Chrome 中亲自完成验证，然后重新扫描；Jobmaster 不会绕过验证码。"));
+        return;
+      }
+      const review = createSubmissionReview({
+        id: `submission-${globalThis.crypto?.randomUUID?.() ?? createLocalId(selected.id)}`,
+        applicationId: selected.id,
+        company: selected.company,
+        role: selected.role,
+        provider: scan.provider,
+        providerJobId: scan.providerJobId,
+        resumeVersionId: selectedJobResumeVersion.id,
+        receiptFingerprint: refreshedPreflight.receiptFingerprint,
+        pageFingerprint: scan.pageFingerprint,
+        modeRequested: applicationAutomationMode,
+        fields: reviewedAutomationFields(scan, candidateProfile, applicationAnswerLibrary),
+      });
+      if (!review || !scan.capabilities?.fill) {
+        setToast(t("官网表单没有可安全识别的字段，已保留专用浏览器供手动处理。"));
+        return;
+      }
+      const allowedGroups = Object.entries(applicationAssistAuthorization)
+        .filter(([, allowed]) => allowed)
+        .map(([group]) => group);
+      const audit = createApplicationAssistAudit({
+        job: selected,
+        resumeVersionId: selectedJobResumeVersion.id,
+        allowedGroups,
+        packet: applicationFieldPacket,
+        candidateProfile,
+        resumeText: selectedJobResumeVersion.content,
+      });
+      const metadata = {
+        resumeVersionId: selectedJobResumeVersion.id,
+        sourceReceiptFingerprint: refreshedPreflight.receiptFingerprint,
+        authorizedGroups: allowedGroups,
+        warningCodes: refreshedPreflight.warnings,
+      };
+      setApplicationState((current) => {
+        const checked = appendPreflightPassed(current, selected.id, { metadata }).state;
+        return appendApplicationOpened(checked, selected.id, { metadata }).state;
+      });
+      setApplicationAssists((current) => ({ ...current, [selected.id]: audit }));
+      setSubmissionReview(review);
+      setIsSubmissionAuthorizationConfirmed(false);
+      setIsApplicationAssistOpen(false);
+      setIsSubmissionReviewOpen(true);
+      setToast(t("官网字段扫描完成。请逐项审核最终内容后再授权。"));
+    } catch (error) {
+      setToast(`${t("官网表单扫描失败")}: ${error.message}`);
+    } finally {
+      setIsApplicationAutomationScanning(false);
+    }
+  }
+
+  function updateSubmissionReviewField(fieldId, patch) {
+    setSubmissionReview((current) => {
+      if (!current) return current;
+      const fields = current.fields.map((field) => field.id === fieldId ? { ...field, ...patch } : field);
+      return createSubmissionReview({ ...current, fields, createdAt: current.createdAt });
+    });
+    setIsSubmissionAuthorizationConfirmed(false);
+  }
+
+  function saveSubmissionAnswer(field) {
+    const result = upsertApplicationAnswer(applicationAnswerLibrary, {
+      question: field.label,
+      answer: field.value,
+      category: field.category,
+      state: "confirmed",
+      sourceCode: "user-confirmed",
+    });
+    setApplicationAnswerLibrary(result.library);
+    setToast(result.changed ? t("已保存到浏览器本地答案库。") : t("这个答案无法保存，请检查内容。"));
+  }
+
+  function updateSavedApplicationAnswer(answer, value) {
+    const result = upsertApplicationAnswer(applicationAnswerLibrary, {
+      question: answer.question,
+      answer: value,
+      category: answer.category,
+      state: value.trim() ? "confirmed" : "draft",
+      sourceCode: "user-confirmed",
+    });
+    if (result.changed) setApplicationAnswerLibrary(result.library);
+  }
+
+  function deleteSavedApplicationAnswer(answerId) {
+    const result = removeApplicationAnswer(applicationAnswerLibrary, answerId);
+    if (!result.changed) return;
+    setApplicationAnswerLibrary(result.library);
+    setToast(t("已从浏览器本地答案库删除。"));
+  }
+
+  function closeSubmissionReview({ keepBrowser = false } = {}) {
+    if (isSubmissionExecuting) return;
+    if (!keepBrowser && applicationAutomationScan?.sessionId) {
+      closeApplicationAutomationSession(applicationAutomationScan.sessionId).catch(() => {});
+      setApplicationAutomationScan(null);
+      setSubmissionReview(null);
+    }
+    setIsSubmissionReviewOpen(false);
+    setIsSubmissionAuthorizationConfirmed(false);
+  }
+
+  async function executeSubmissionReviewOnce() {
+    if (!selected || !submissionReview || !applicationAutomationScan || isSubmissionExecuting
+      || !isSubmissionAuthorizationConfirmed || !submissionPreflight?.ready) return;
+    const authorizationId = `auth-${globalThis.crypto?.randomUUID?.() ?? createLocalId("submission")}`;
+    const attemptId = `attempt-${globalThis.crypto?.randomUUID?.() ?? createLocalId("submission")}`;
+    const authorized = authorizeSubmissionReview(submissionReview, {
+      authorizationId,
+      company: selected.company,
+      role: selected.role,
+    });
+    if (!authorized.changed) {
+      setToast(`${t("无法创建单次投递授权")}: ${authorized.reason}`);
+      return;
+    }
+    const finalPreflight = evaluateCurrentSubmissionPreflight(selected, submissionReview, authorized.session);
+    if (!finalPreflight.ready) {
+      setIsSubmissionAuthorizationConfirmed(false);
+      setToast(t("投递内容或页面状态已变化，请重新审核。"));
+      return;
+    }
+    const initialMetadata = submissionAuditMetadata(authorized.session);
+    const startedMetadata = { ...initialMetadata, attemptId };
+    setSubmissionSessionsById((current) => ({ ...current, [authorized.session.id]: authorized.session }));
+    setApplicationState((current) => {
+      const next = appendSubmissionAuthorized(current, selected.id, { metadata: initialMetadata }).state;
+      return appendSubmissionStarted(next, selected.id, { metadata: startedMetadata }).state;
+    });
+    setIsSubmissionExecuting(true);
+    try {
+      const result = await executeReviewedApplication({
+        sessionId: applicationAutomationScan.sessionId,
+        review: submissionReview,
+        authorizedSession: authorized.session,
+        attemptId,
+      });
+      setSubmissionSessionsById((current) => ({ ...current, [result.session.id]: result.session }));
+      const metadata = submissionAuditMetadata(result.session);
+      setApplicationState((current) => {
+        let next = current;
+        if (result.status === "submitted") {
+          next = appendSubmissionCompleted(next, selected.id, { metadata }).state;
+          return transitionApplicationStatus(next, selected.id, "已投递", { updated: "刚刚确认投递成功" }).state;
+        }
+        return appendSubmissionPaused(next, selected.id, { metadata }).state;
+      });
+      if (result.status === "submitted") {
+        setApplicationOperationsById((current) => recordConfirmedSubmission(current, selected.id, {
+          submittedAt: result.session.completedAt,
+          resumeVersionId: result.session.resumeVersionId,
+          receiptFingerprint: result.session.receiptFingerprint,
+          payloadFingerprint: result.session.payloadFingerprint,
+        }).operationsById);
+        setReviewStatus("已投递");
+        setIsSubmissionReviewOpen(false);
+        await closeApplicationAutomationSession(applicationAutomationScan.sessionId).catch(() => {});
+        setApplicationAutomationScan(null);
+        setSubmissionReview(null);
+        setToast(t("官网已返回提交确认。已记录投递版本，并安排五个工作日后的跟进。"));
+      } else {
+        setIsSubmissionReviewOpen(false);
+        setIsApplicationAssistOpen(true);
+        setIsSubmissionAuthorizationConfirmed(false);
+        setToast(t(result.status === "filled"
+          ? "已填写所有获授权字段并停在提交前。请在官网检查，若要改为自动提交必须重新扫描、审核并再次授权。"
+          : "自动化已停止在需要本人处理的位置。完成官网字段后请重新扫描并审核。"));
+      }
+    } catch (error) {
+      setApplicationState((current) => appendSubmissionFailed(current, selected.id, {
+        metadata: { ...startedMetadata, resultCode: "bridge-error" },
+      }).state);
+      setIsSubmissionReviewOpen(false);
+      setIsApplicationAssistOpen(true);
+      setIsSubmissionAuthorizationConfirmed(false);
+      setToast(`${t("单次自动化执行失败")}: ${error.message}`);
+    } finally {
+      setIsSubmissionExecuting(false);
     }
   }
 
@@ -3092,7 +3590,7 @@ export function App() {
                   <div>
                     <span>{t("求职进度")}</span>
                     <h1>{t("把每一次机会推进到底。")}</h1>
-                    <p>{t("状态、备注和下一步保存在当前浏览器草稿中，申请页最终提交仍由你本人确认。")}</p>
+                    <p>{t("从今日任务到面试复盘都保存在当前浏览器。自动提交只在你审核最终字段并对单个岗位再次授权后执行一次。")}</p>
                   </div>
                   <button className="button primary" onClick={() => setStep("radar")}><MagnifyingGlass size={17} />{t("继续找工作")}</button>
                 </header>
@@ -3106,46 +3604,221 @@ export function App() {
                   ))}
                 </section>
 
-                <section className="application-table-shell">
-                  <div className="application-table-heading">
-                    <div><strong>{t("投递记录")}</strong><span>{uiLanguage === "en" ? `${trackedJobs.length} roles` : `${trackedJobs.length} 个岗位`}</span></div>
-                    <span>{t("状态可以随时更新")}</span>
-                  </div>
-                  {trackedJobs.length === 0 ? (
-                    <div className="jobs-empty-state">
-                      <CheckCircle size={28} />
-                      <strong>{t("还没有投递记录")}</strong>
-                      <p>{t("收藏岗位、开始定制简历或打开申请页后，岗位会出现在这里。")}</p>
-                      <button className="button primary" onClick={() => setStep("radar")}>{t("浏览岗位")}</button>
-                    </div>
-                  ) : (
-                    <div className="application-table" role="table" aria-label={t("投递记录")}>
-                      <div className="application-table-row header" role="row">
-                        <span role="columnheader">{t("岗位")}</span><span role="columnheader">{t("信号分")}</span><span role="columnheader">{t("状态")}</span><span role="columnheader">{t("最近更新")}</span><span role="columnheader">{t("操作")}</span>
+                <nav className="applications-subnav" aria-label={t("求职进度视图")}>
+                  {[
+                    ["today", "今天", todayActionQueue.length],
+                    ["applications", "全部申请", trackedJobs.length],
+                    ["interviews", "面试", interviewJobs.length],
+                    ["insights", "转化数据", applicationAnalytics.counts.applied],
+                  ].map(([view, label, count]) => (
+                    <button key={view} aria-pressed={applicationsView === view} className={applicationsView === view ? "active" : ""} onClick={() => setApplicationsView(view)}>
+                      <span>{t(label)}</span><em>{count}</em>
+                    </button>
+                  ))}
+                </nav>
+
+                {applicationsView === "today" && (
+                  <>
+                    <section className="application-workspace-panel today-workspace">
+                      <div className="application-table-heading">
+                        <div><strong>{t("今天最值得推进")}</strong><span>{t("按时间、状态与准备度排序")}</span></div>
+                        <span>{t("最多显示 5 项")}</span>
                       </div>
-                      {trackedJobs.map((job) => (
-                        <div className="application-table-row" role="row" key={job.id}>
-                          <span role="cell" className="application-job-cell">
-                            <button className="application-job" onClick={() => selectJob(job)}>
-                              <CompanyMark accent={job.accent} />
-                              <span><strong>{job.role}</strong><small>{job.company} · {t(job.location)}</small></span>
-                            </button>
-                          </span>
-                          <strong role="cell">{formatJobSignalScore(job)}</strong>
-                          <label role="cell" className="application-status-select">
-                            <StatusDot status={normalizeApplicationStatus(job.status)} />
-                            <select aria-label={uiLanguage === "en" ? `Update ${job.company} ${job.role} status` : `更新${job.company}${job.role}的投递状态`} value={normalizeApplicationStatus(job.status)} onChange={(event) => { setSelectedId(job.id); setReviewStatus(event.target.value); setApplicationState((current) => transitionApplicationStatus(current, job.id, event.target.value, { updated: "刚刚更新" }).state); }}>
-                              {statusOptions.filter((status) => status !== "已归档").map((status) => <option key={status} value={status}>{t(status)}</option>)}
-                            </select>
-                            <CaretDown size={14} />
-                          </label>
-                          <span role="cell">{t(job.updated)}</span>
-                          <div role="cell" className="application-row-actions"><button disabled={isJobUrlVerifying(job)} aria-label={uiLanguage === "en" ? `Open ${job.company} application` : `打开 ${job.company} 申请页`} onClick={() => openJobSource(job)}><ArrowSquareOut size={16} /></button><button aria-label={uiLanguage === "en" ? `View ${job.company} role details` : `查看 ${job.company} 岗位详情`} onClick={() => selectJob(job)}><CaretRight size={16} /></button></div>
+                      {todayActionQueue.length === 0 ? (
+                        <div className="jobs-empty-state compact">
+                          <CheckCircle size={28} />
+                          <strong>{t("今天没有待推进任务")}</strong>
+                          <p>{t("收藏一个真实岗位或更新投递状态后，这里会生成下一步。")}</p>
+                        </div>
+                      ) : (
+                        <div className="today-action-list">
+                          {todayActionQueue.map((action, index) => {
+                            const job = applications.find((item) => item.id === action.applicationId);
+                            if (!job) return null;
+                            return (
+                              <article className="today-action-row" key={action.applicationId}>
+                                <span className="today-action-index">{String(index + 1).padStart(2, "0")}</span>
+                                <div>
+                                  <span>{applicationActionLabel(action.actionCode, t)}</span>
+                                  <strong>{job.company} · {job.role}</strong>
+                                  <small>{t(action.status)}{action.dueAt ? ` · ${formatReceiptTimestamp(action.dueAt, uiLanguage, t)}` : ""}</small>
+                                </div>
+                                <div className="today-action-buttons">
+                                  {action.actionCode === "follow-up" ? (
+                                    <>
+                                      <button className="button quiet" onClick={() => copyApplicationFollowUp(job)}>{t("复制跟进模板")}</button>
+                                      <button className="button quiet" onClick={() => markApplicationFollowedUp(job)}>{t("标记已跟进")}</button>
+                                    </>
+                                  ) : (
+                                    <button className="button quiet" onClick={() => {
+                                      if (action.actionCode === "prepare-interview") {
+                                        setSelectedId(job.id);
+                                        setApplicationsView("interviews");
+                                        return;
+                                      }
+                                      selectJob(job);
+                                    }}>{t("打开工作区")}<CaretRight size={15} /></button>
+                                  )}
+                                </div>
+                              </article>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </section>
+
+                    <section className="application-workspace-panel answer-library-panel">
+                      <div className="application-table-heading">
+                        <div><strong>{t("申请答案库")}</strong><span>{t("仅保存你亲自确认的非敏感答案")}</span></div>
+                        <span>{uiLanguage === "en" ? `${applicationAnswerLibrary.answers.length} answers` : `${applicationAnswerLibrary.answers.length} 条答案`}</span>
+                      </div>
+                      {applicationAnswerLibrary.answers.length === 0 ? (
+                        <div className="answer-library-empty">
+                          <p>{t("在官网字段审核中保存开放题后，会在这里复用；工作授权、签证、身份和薪资答案永远不会保存。")}</p>
+                        </div>
+                      ) : (
+                        <div className="answer-library-list">
+                          {applicationAnswerLibrary.answers.map((answer) => (
+                            <article key={answer.id} className="answer-library-row">
+                              <header>
+                                <div><span>{t(answer.category === "narrative" ? "开放题" : answer.category === "factual" ? "事实字段" : "仅限人工")}</span><strong>{answer.question}</strong></div>
+                                <button aria-label={t("删除答案")} onClick={() => deleteSavedApplicationAnswer(answer.id)}><Trash size={15} /></button>
+                              </header>
+                              {answer.category === "sensitive" ? (
+                                <p>{t("敏感答案不保存在 Jobmaster 中。")}</p>
+                              ) : (
+                                <textarea defaultValue={answer.answer} aria-label={uiLanguage === "en" ? `Edit answer for ${answer.question}` : `编辑答案：${answer.question}`} onBlur={(event) => updateSavedApplicationAnswer(answer, event.target.value)} />
+                              )}
+                              <small>{t("浏览器本地")} · {formatReceiptTimestamp(answer.updatedAt, uiLanguage, t)}</small>
+                            </article>
+                          ))}
+                        </div>
+                      )}
+                    </section>
+                  </>
+                )}
+
+                {applicationsView === "applications" && (
+                  <section className="application-table-shell">
+                    <div className="application-table-heading">
+                      <div><strong>{t("投递记录")}</strong><span>{uiLanguage === "en" ? `${trackedJobs.length} roles` : `${trackedJobs.length} 个岗位`}</span></div>
+                      <span>{t("状态可以随时更新")}</span>
+                    </div>
+                    {trackedJobs.length === 0 ? (
+                      <div className="jobs-empty-state">
+                        <CheckCircle size={28} />
+                        <strong>{t("还没有投递记录")}</strong>
+                        <p>{t("收藏岗位、开始定制简历或打开申请页后，岗位会出现在这里。")}</p>
+                        <button className="button primary" onClick={() => setStep("radar")}>{t("浏览岗位")}</button>
+                      </div>
+                    ) : (
+                      <div className="application-table" role="table" aria-label={t("投递记录")}>
+                        <div className="application-table-row header" role="row">
+                          <span role="columnheader">{t("岗位")}</span><span role="columnheader">{t("信号分")}</span><span role="columnheader">{t("状态")}</span><span role="columnheader">{t("最近更新")}</span><span role="columnheader">{t("操作")}</span>
+                        </div>
+                        {trackedJobs.map((job) => (
+                          <div className="application-table-row" role="row" key={job.id}>
+                            <span role="cell" className="application-job-cell">
+                              <button className="application-job" onClick={() => selectJob(job)}>
+                                <CompanyMark accent={job.accent} />
+                                <span><strong>{job.role}</strong><small>{job.company} · {t(job.location)}</small></span>
+                              </button>
+                            </span>
+                            <strong role="cell">{formatJobSignalScore(job)}</strong>
+                            <label role="cell" className="application-status-select">
+                              <StatusDot status={normalizeApplicationStatus(job.status)} />
+                              <select aria-label={uiLanguage === "en" ? `Update ${job.company} ${job.role} status` : `更新${job.company}${job.role}的投递状态`} value={normalizeApplicationStatus(job.status)} onChange={(event) => { setSelectedId(job.id); setReviewStatus(event.target.value); updateApplicationStatus(job.id, event.target.value); }}>
+                                {statusOptions.filter((status) => status !== "已归档").map((status) => <option key={status} value={status}>{t(status)}</option>)}
+                              </select>
+                              <CaretDown size={14} />
+                            </label>
+                            <span role="cell">{t(job.updated)}</span>
+                            <div role="cell" className="application-row-actions"><button disabled={isJobUrlVerifying(job)} aria-label={uiLanguage === "en" ? `Open ${job.company} application` : `打开 ${job.company} 申请页`} onClick={() => openJobSource(job)}><ArrowSquareOut size={16} /></button><button aria-label={uiLanguage === "en" ? `View ${job.company} role details` : `查看 ${job.company} 岗位详情`} onClick={() => selectJob(job)}><CaretRight size={16} /></button></div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                )}
+
+                {applicationsView === "interviews" && (
+                  <section className="application-workspace-panel interview-workspace">
+                    <div className="application-table-heading">
+                      <div><strong>{t("面试准备台")}</strong><span>{t("只引用已提交简历与当前岗位证据")}</span></div>
+                      <span>{t("缺口不会被补写成经历")}</span>
+                    </div>
+                    {interviewJobs.length === 0 ? (
+                      <div className="jobs-empty-state compact">
+                        <CalendarBlank size={28} />
+                        <strong>{t("还没有进入面试的岗位")}</strong>
+                        <p>{t("将申请状态更新为面试后，可以在这里安排时间、记录笔记并准备问题。")}</p>
+                      </div>
+                    ) : (
+                      <div className="interview-workspace-list">
+                        {interviewJobs.map((job) => {
+                          const operation = applicationOperationsById[job.id] ?? {};
+                          const interview = operation.interview ?? {};
+                          const submittedResume = resumeVersions.find((version) => version.id === operation.submittedPackage?.resumeVersionId)
+                            ?? [...resumeVersions].reverse().find((version) => version.layer === "job" && version.jobId === job.id)
+                            ?? {};
+                          const outline = buildInterviewPrepOutline(job, submittedResume);
+                          return (
+                            <article className="interview-card" key={job.id}>
+                              <header>
+                                <div><span>{t("面试中")}</span><h2>{job.company} · {job.role}</h2><small>{submittedResume.name ? `${t("基于")}: ${submittedResume.name}` : t("尚未找到已提交简历版本")}</small></div>
+                                <button className="button quiet" onClick={() => selectJob(job)}>{t("查看岗位")}<CaretRight size={15} /></button>
+                              </header>
+                              <div className="interview-fields">
+                                <label><span>{t("面试时间")}</span><input type="datetime-local" value={toDateTimeLocalValue(interview.scheduledAt)} onChange={(event) => updateInterviewField(job, "scheduledAt", event.target.value)} /></label>
+                                <label><span>{t("阶段")}</span><input value={interview.stage ?? ""} placeholder={t("例如：技术一面")} onChange={(event) => updateInterviewField(job, "stage", event.target.value)} /></label>
+                                <label className="full-width"><span>{t("准备与复盘笔记")}</span><textarea value={interview.notes ?? ""} placeholder={t("记录面试官、重点、待补证据与后续动作")} onChange={(event) => updateInterviewField(job, "notes", event.target.value)} /></label>
+                              </div>
+                              <div className="interview-outline">
+                                <section><span>{t("可用证据")}</span>{outline.evidence.length ? <ul>{outline.evidence.map((item) => <li key={item}>{item}</li>)}</ul> : <p>{t("当前岗位没有可确认的匹配证据。")}</p>}</section>
+                                <section><span>{t("需要正面说明的缺口")}</span>{outline.gaps.length ? <ul>{outline.gaps.map((item) => <li key={item}>{item}</li>)}</ul> : <p>{t("当前没有已标记缺口。")}</p>}</section>
+                                <section><span>{t("建议练习的问题")}</span><ol>{outline.questions.map((item) => <li key={item}>{t(item)}</li>)}</ol></section>
+                              </div>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </section>
+                )}
+
+                {applicationsView === "insights" && (
+                  <section className="application-workspace-panel insights-workspace">
+                    <div className="application-table-heading">
+                      <div><strong>{t("求职转化")}</strong><span>{t("只统计当前浏览器中的岗位记录")}</span></div>
+                      <span>{t("小样本仅供方向判断")}</span>
+                    </div>
+                    <div className="analytics-funnel">
+                      {[
+                        ["发现", applicationAnalytics.counts.discovered],
+                        ["收藏或准备", applicationAnalytics.counts.saved],
+                        ["已投递", applicationAnalytics.counts.applied],
+                        ["面试", applicationAnalytics.counts.interviews],
+                        ["Offer", applicationAnalytics.counts.offers],
+                      ].map(([label, value]) => <article key={label}><span>{t(label)}</span><strong>{value}</strong></article>)}
+                    </div>
+                    <div className="analytics-conversions">
+                      {[
+                        ["发现 → 投递", applicationAnalytics.conversions.discoveredToApplied],
+                        ["投递 → 面试", applicationAnalytics.conversions.appliedToInterview],
+                        ["面试 → Offer", applicationAnalytics.conversions.interviewToOffer],
+                      ].map(([label, value]) => <article key={label}><span>{t(label)}</span><strong>{value == null ? "—" : `${value}%`}</strong></article>)}
+                    </div>
+                    <div className="analytics-source-table" role="table" aria-label={t("按来源统计")}>
+                      <div role="row" className="analytics-source-row header"><span>{t("来源")}</span><span>{t("投递")}</span><span>{t("面试")}</span><span>{t("转化")}</span></div>
+                      {applicationAnalytics.bySource.map((row) => (
+                        <div role="row" className="analytics-source-row" key={row.source}>
+                          <span>{t(row.source)}{!row.trendEligible && <small>{t(" · 小样本")}</small>}</span>
+                          <strong>{row.applied}</strong><strong>{row.interviews}</strong><strong>{row.appliedToInterview == null ? "—" : `${row.appliedToInterview}%`}</strong>
                         </div>
                       ))}
                     </div>
-                  )}
-                </section>
+                  </section>
+                )}
               </div>
             )}
 
@@ -3204,7 +3877,7 @@ export function App() {
             <span>{t("状态历史")}</span>
             {selectedApplicationEvents.length ? selectedApplicationEvents.slice(-4).reverse().map((event) => (
               <small key={event.id}>
-                {event.type === "status.changed" ? `${t(event.fromStatus)} → ${t(event.toStatus)}` : event.type === "status.reverted" ? t("已撤销最近状态变更") : event.type === "preflight.passed" ? t("申请前检查已通过") : t("已打开具体申请页")}
+                {applicationEventLabel(event, t)}
                 {` · ${formatReceiptTimestamp(event.occurredAt, uiLanguage, t)}`}
               </small>
             )) : <small>{t("历史从此功能启用后开始")}</small>}
@@ -3282,7 +3955,7 @@ export function App() {
 
           <div className="approval-note">
             <PaperPlaneTilt size={18} />
-            <p>{t("授权只启用本地字段复制和打开具体申请页；不会自动填表或提交，最终提交由本人完成。")}</p>
+            <p>{t("手动模式只复制字段并打开申请页。自动化模式还需要审核官网实际字段，并对当前公司与岗位进行第二次单次授权。")}</p>
           </div>
         </aside>
         ) : null}
@@ -3353,9 +4026,36 @@ export function App() {
           acknowledgements={applicationAssistAcknowledgements}
           onAcknowledgementsChange={setApplicationAssistAcknowledgements}
           onCopyFields={copyApplicationFields}
+          automationCapabilities={applicationAutomationCapabilities}
+          automationMode={applicationAutomationMode}
+          onAutomationModeChange={(mode) => {
+            setApplicationAutomationMode(mode);
+            setIsApplicationAssistConfirmed(false);
+            setIsSubmissionAuthorizationConfirmed(false);
+          }}
+          onScan={scanApplicationForAutomation}
+          isScanning={isApplicationAutomationScanning}
           isLaunching={isApplicationAssistLaunching}
           onClose={closeApplicationAssist}
           onLaunch={launchApplicationAssist}
+        />
+      )}
+
+      {isSubmissionReviewOpen && selected && applicationAutomationScan && submissionReview && (
+        <ApplicationSubmissionReviewModal
+          t={t}
+          uiLanguage={uiLanguage}
+          selected={selected}
+          scan={applicationAutomationScan}
+          review={submissionReview}
+          submissionPreflight={submissionPreflight}
+          authorizationConfirmed={isSubmissionAuthorizationConfirmed}
+          onAuthorizationConfirmed={setIsSubmissionAuthorizationConfirmed}
+          onFieldChange={updateSubmissionReviewField}
+          onSaveAnswer={saveSubmissionAnswer}
+          onClose={() => closeSubmissionReview()}
+          onExecute={executeSubmissionReviewOnce}
+          isExecuting={isSubmissionExecuting}
         />
       )}
 

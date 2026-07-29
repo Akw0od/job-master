@@ -9,6 +9,10 @@ import {
   verifyJobSearchResult,
   verifyJobUrls,
 } from "./jobSearch.mjs";
+import {
+  ApplicationAutomationRunner,
+  applicationAutomationCapabilities,
+} from "./applicationAutomation.mjs";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const schemaPath = join(currentDir, "response.schema.json");
@@ -60,13 +64,13 @@ function sendJson(response, status, body, origin) {
   response.end(JSON.stringify(body));
 }
 
-function readRequestBody(request) {
+function readRequestBody(request, { maxBytes = 250_000 } = {}) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
     request.on("data", (chunk) => {
       size += chunk.length;
-      if (size > 250_000) {
+      if (size > maxBytes) {
         reject(new Error("Request body is too large."));
         request.destroy();
         return;
@@ -122,6 +126,8 @@ export async function startLocalAgentServer({ port = 4317 } = {}) {
   const login = await codexLoginStatus();
   let busy = false;
   let verificationBusy = false;
+  let automationBusy = false;
+  const automationRunner = new ApplicationAutomationRunner();
   const server = createServer(async (request, response) => {
     const origin = request.headers.origin;
     if (origin && !isAllowedOrigin(origin)) {
@@ -147,6 +153,79 @@ export async function startLocalAgentServer({ port = 4317 } = {}) {
     }
 
     const requestUrl = new URL(request.url, `http://${request.headers.host ?? "127.0.0.1"}`);
+    if (request.method === "GET" && requestUrl.pathname === "/v1/applications/automation/health") {
+      sendJson(response, 200, {
+        ...applicationAutomationCapabilities(),
+        busy: automationBusy,
+      }, origin);
+      return;
+    }
+
+    if (request.method === "POST" && requestUrl.pathname === "/v1/applications/automation/scan") {
+      if (automationBusy) {
+        sendJson(response, 429, { error: "The application automation bridge is already busy." }, origin);
+        return;
+      }
+      try {
+        const rawBody = await readRequestBody(request);
+        const payload = JSON.parse(rawBody);
+        automationBusy = true;
+        const verification = await verifyJobUrls([payload.applicationUrl]);
+        const check = verification.checks?.[0];
+        if (check?.state !== "open") {
+          throw new Error("具体申请链接未通过当前官网开放状态核验，已停止自动化扫描。");
+        }
+        sendJson(response, 200, {
+          ...await automationRunner.scan(payload),
+          verification: {
+            state: check.state,
+            checkedAt: check.checkedAt,
+            reason: check.reason,
+          },
+        }, origin);
+      } catch (error) {
+        sendJson(response, 400, { error: error.message || "Application page scan failed." }, origin);
+      } finally {
+        automationBusy = false;
+      }
+      return;
+    }
+
+    if (request.method === "POST" && requestUrl.pathname === "/v1/applications/automation/execute") {
+      if (automationBusy) {
+        sendJson(response, 429, { error: "The application automation bridge is already busy." }, origin);
+        return;
+      }
+      try {
+        const rawBody = await readRequestBody(request, { maxBytes: 1_500_000 });
+        const payload = JSON.parse(rawBody);
+        automationBusy = true;
+        const applicationUrl = automationRunner.getSessionApplicationUrl(payload.sessionId);
+        if (!applicationUrl) throw new Error("申请页会话不存在或已关闭，请重新扫描。");
+        const verification = await verifyJobUrls([applicationUrl]);
+        if (verification.checks?.[0]?.state !== "open") {
+          throw new Error("具体申请链接未通过最新官网开放状态核验，已停止单次自动化。");
+        }
+        sendJson(response, 200, await automationRunner.execute(payload), origin);
+      } catch (error) {
+        sendJson(response, 400, { error: error.message || "Application automation failed." }, origin);
+      } finally {
+        automationBusy = false;
+      }
+      return;
+    }
+
+    if (request.method === "POST" && requestUrl.pathname === "/v1/applications/automation/close") {
+      try {
+        const rawBody = await readRequestBody(request);
+        const payload = JSON.parse(rawBody);
+        sendJson(response, 200, { closed: await automationRunner.closeSession(payload.sessionId) }, origin);
+      } catch (error) {
+        sendJson(response, 400, { error: error.message || "Application automation session could not be closed." }, origin);
+      }
+      return;
+    }
+
     if (request.method === "POST" && requestUrl.pathname === "/v1/jobs/verify") {
       if (verificationBusy) {
         sendJson(response, 429, { error: "The local agent is already verifying a job link." }, origin);
@@ -243,6 +322,9 @@ export async function startLocalAgentServer({ port = 4317 } = {}) {
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, "127.0.0.1", resolve);
+  });
+  server.on("close", () => {
+    automationRunner.close().catch(() => {});
   });
   return server;
 }

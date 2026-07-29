@@ -9,6 +9,7 @@ import { normalizeReceiptUrl } from "./sourceReceipt.js";
 export const applicationEventSchemaVersion = 1;
 export const applicationEventTypes = Object.freeze([
   "status.changed", "status.reverted", "application.opened", "preflight.passed",
+  "submission.authorized", "submission.started", "submission.completed", "submission.paused", "submission.failed",
 ]);
 
 const eventTypes = new Set(applicationEventTypes);
@@ -16,7 +17,10 @@ const statuses = new Set(applicationStatusOptions);
 const terminalDuplicateStatuses = new Set(["已投递", "面试", "Offer", "未通过"]);
 const maxEventsPerApplication = 50;
 const maxEventsGlobally = 500;
-const safeMetadataKeys = new Set(["resumeVersionId", "sourceReceiptFingerprint", "authorizedGroups", "warningCodes"]);
+const safeMetadataKeys = new Set([
+  "resumeVersionId", "sourceReceiptFingerprint", "authorizedGroups", "warningCodes",
+  "payloadFingerprint", "authorizationId", "submissionMode", "attemptId", "resultCode", "confirmationFingerprint",
+]);
 const safeText = (value, max = 160) => typeof value === "string" && value.trim() && value.trim().length <= max ? value.trim() : "";
 const safeEventId = (value) => {
   const normalized = safeText(value, 120);
@@ -255,6 +259,26 @@ export const appendApplicationOpened = (state, applicationId, options = {}) => {
 export const appendPreflightPassed = (state, applicationId, options = {}) => {
   const safeOptions = isPlainObject(options) ? options : {};
   return appendEvent(state, applicationId, "preflight.passed", { metadata: safeOptions.metadata ?? {} }, safeOptions);
+};
+export const appendSubmissionAuthorized = (state, applicationId, options = {}) => {
+  const safeOptions = isPlainObject(options) ? options : {};
+  return appendEvent(state, applicationId, "submission.authorized", { metadata: safeOptions.metadata ?? {} }, safeOptions);
+};
+export const appendSubmissionStarted = (state, applicationId, options = {}) => {
+  const safeOptions = isPlainObject(options) ? options : {};
+  return appendEvent(state, applicationId, "submission.started", { metadata: safeOptions.metadata ?? {} }, safeOptions);
+};
+export const appendSubmissionCompleted = (state, applicationId, options = {}) => {
+  const safeOptions = isPlainObject(options) ? options : {};
+  return appendEvent(state, applicationId, "submission.completed", { metadata: safeOptions.metadata ?? {} }, safeOptions);
+};
+export const appendSubmissionPaused = (state, applicationId, options = {}) => {
+  const safeOptions = isPlainObject(options) ? options : {};
+  return appendEvent(state, applicationId, "submission.paused", { metadata: safeOptions.metadata ?? {} }, safeOptions);
+};
+export const appendSubmissionFailed = (state, applicationId, options = {}) => {
+  const safeOptions = isPlainObject(options) ? options : {};
+  return appendEvent(state, applicationId, "submission.failed", { metadata: safeOptions.metadata ?? {} }, safeOptions);
 };
 
 export function hasApplicationEventHistory(state, applicationId) {
