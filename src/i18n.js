@@ -203,6 +203,7 @@ const englishCopy = {
   "简历版本": "Resume versions",
   "查看主简历": "View Master Resume",
   "把每一次机会推进到底。": "Move every opportunity forward.",
+  "正在加载界面…": "Loading workspace…",
   "状态、备注和下一步保存在当前浏览器草稿中，申请页最终提交仍由你本人确认。": "Statuses, notes, and next steps stay in this browser. You still confirm every final application submission.",
   "继续找工作": "Find more roles",
   "投递记录": "Application records",

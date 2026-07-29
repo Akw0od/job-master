@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowSquareOut,
@@ -27,13 +27,6 @@ import {
 } from "@phosphor-icons/react";
 import "./styles.css";
 import { ResumeDocument } from "./components/ResumeDocument";
-import { ApplicationAssistModal } from "./components/modals/ApplicationAssistModal";
-import { ApplicationSubmissionReviewModal } from "./components/modals/ApplicationSubmissionReviewModal";
-import { EditModal } from "./components/modals/EditModal";
-import { CustomDirectionModal, ImportJobModal } from "./components/modals/JobInputModals";
-import { LocalDataModal } from "./components/modals/LocalDataModal";
-import { ResumeRewriteConsentModal } from "./components/modals/ResumeRewriteConsentModal";
-import { ResumeExportModal } from "./components/modals/ResumeExportModal";
 import { jobPoolsByMarket } from "./data/jobCatalog";
 import {
   applicationStatusKeyByLabel as statusKeyByLabel,
@@ -141,6 +134,23 @@ import {
   summarizeResumeReview,
 } from "./resume/resumeModel";
 
+const ApplicationAssistModal = lazy(() => import("./components/modals/ApplicationAssistModal")
+  .then((module) => ({ default: module.ApplicationAssistModal })));
+const ApplicationSubmissionReviewModal = lazy(() => import("./components/modals/ApplicationSubmissionReviewModal")
+  .then((module) => ({ default: module.ApplicationSubmissionReviewModal })));
+const EditModal = lazy(() => import("./components/modals/EditModal")
+  .then((module) => ({ default: module.EditModal })));
+const CustomDirectionModal = lazy(() => import("./components/modals/JobInputModals")
+  .then((module) => ({ default: module.CustomDirectionModal })));
+const ImportJobModal = lazy(() => import("./components/modals/JobInputModals")
+  .then((module) => ({ default: module.ImportJobModal })));
+const LocalDataModal = lazy(() => import("./components/modals/LocalDataModal")
+  .then((module) => ({ default: module.LocalDataModal })));
+const ResumeRewriteConsentModal = lazy(() => import("./components/modals/ResumeRewriteConsentModal")
+  .then((module) => ({ default: module.ResumeRewriteConsentModal })));
+const ResumeExportModal = lazy(() => import("./components/modals/ResumeExportModal")
+  .then((module) => ({ default: module.ResumeExportModal })));
+
 const tabs = ["岗位匹配", "定制简历", "追踪"];
 
 function verificationStatusCopy(job) {
@@ -148,6 +158,17 @@ function verificationStatusCopy(job) {
   if (job?.verificationStatus === "verified" && !hasFreshOpenSourceReceipt(job)) return "核验已过期";
   if (job?.verificationStatus === "verified") return "链接已核验";
   return "待重新核验";
+}
+
+function ModalChunkFallback({ t }) {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="modal-chunk-fallback" role="status" aria-live="polite">
+        <CircleNotch size={20} className="spin" />
+        <span>{t("正在加载界面…")}</span>
+      </section>
+    </div>
+  );
 }
 
 const receiptValueLabels = {
@@ -3961,143 +3982,145 @@ export function App() {
         ) : null}
       </section>
 
-      {activeEditor && (
-        <EditModal t={t} uiLanguage={uiLanguage} editor={activeEditor} onChange={updateReviewEditor} onCancel={closeReviewEditor} onSave={saveReviewEditor} />
-      )}
+      <Suspense fallback={<ModalChunkFallback t={t} />}>
+        {activeEditor && (
+          <EditModal t={t} uiLanguage={uiLanguage} editor={activeEditor} onChange={updateReviewEditor} onCancel={closeReviewEditor} onSave={saveReviewEditor} />
+        )}
 
-      {isLocalDataOpen && (
-        <LocalDataModal
-          t={t}
-          saveStatus={saveStatus}
-          lastSavedAt={formattedLastSavedAt}
-          backupPassword={backupPassword}
-          onBackupPasswordChange={setBackupPassword}
-          onExport={exportLocalDataBackup}
-          backupError={backupError}
-          isExporting={isExportingBackup}
-          restoreFile={restoreFile}
-          restorePassword={restorePassword}
-          onRestoreFileChange={setRestoreFile}
-          onRestorePasswordChange={setRestorePassword}
-          onRestore={restoreLocalDataBackup}
-          restoreError={restoreError}
-          isRestoring={isRestoringBackup}
-          clearConfirmation={clearConfirmation}
-          onClearConfirmationChange={setClearConfirmation}
-          onClear={clearLocalData}
-          clearError={clearError}
-          resumeRewriteConsent={resumeRewriteConsent}
-          onRevokeResumeRewriteConsent={() => {
-            setResumeRewriteConsent(null);
-            setToast(t("已撤销记住的 AI 改写授权；下次发送前会重新询问。"));
-          }}
-          onClose={closeLocalDataModal}
-        />
-      )}
+        {isLocalDataOpen && (
+          <LocalDataModal
+            t={t}
+            saveStatus={saveStatus}
+            lastSavedAt={formattedLastSavedAt}
+            backupPassword={backupPassword}
+            onBackupPasswordChange={setBackupPassword}
+            onExport={exportLocalDataBackup}
+            backupError={backupError}
+            isExporting={isExportingBackup}
+            restoreFile={restoreFile}
+            restorePassword={restorePassword}
+            onRestoreFileChange={setRestoreFile}
+            onRestorePasswordChange={setRestorePassword}
+            onRestore={restoreLocalDataBackup}
+            restoreError={restoreError}
+            isRestoring={isRestoringBackup}
+            clearConfirmation={clearConfirmation}
+            onClearConfirmationChange={setClearConfirmation}
+            onClear={clearLocalData}
+            clearError={clearError}
+            resumeRewriteConsent={resumeRewriteConsent}
+            onRevokeResumeRewriteConsent={() => {
+              setResumeRewriteConsent(null);
+              setToast(t("已撤销记住的 AI 改写授权；下次发送前会重新询问。"));
+            }}
+            onClose={closeLocalDataModal}
+          />
+        )}
 
-      {pendingResumeRewrite && (
-        <ResumeRewriteConsentModal
-          t={t}
-          summary={pendingResumeRewrite.summary}
-          onCancel={cancelPendingResumeRewrite}
-          onContinueOnce={() => approvePendingResumeRewrite("once")}
-          onRemember={() => approvePendingResumeRewrite("remember")}
-        />
-      )}
+        {pendingResumeRewrite && (
+          <ResumeRewriteConsentModal
+            t={t}
+            summary={pendingResumeRewrite.summary}
+            onCancel={cancelPendingResumeRewrite}
+            onContinueOnce={() => approvePendingResumeRewrite("once")}
+            onRemember={() => approvePendingResumeRewrite("remember")}
+          />
+        )}
 
-      {isApplicationAssistOpen && selected && (
-        <ApplicationAssistModal
-          t={t}
-          uiLanguage={uiLanguage}
-          selected={selected}
-          resumeVersion={selectedJobResumeVersion}
-          candidateProfile={candidateProfile}
-          onProfileChange={updateCandidateProfile}
-          authorization={applicationAssistAuthorization}
-          onAuthorizationToggle={toggleApplicationAssistAuthorization}
-          isConfirmed={isApplicationAssistConfirmed}
-          onConfirmationChange={setIsApplicationAssistConfirmed}
-          packet={applicationFieldPacket}
-          canLaunch={canLaunchCurrentApplicationAssist && Boolean(applicationPreflight?.ready)}
-          contactValidation={applicationContactValidation}
-          previousAudit={selectedApplicationAssist}
-          sourceChanged={applicationAssistSourceChanged}
-          preflight={applicationPreflight}
-          acknowledgements={applicationAssistAcknowledgements}
-          onAcknowledgementsChange={setApplicationAssistAcknowledgements}
-          onCopyFields={copyApplicationFields}
-          automationCapabilities={applicationAutomationCapabilities}
-          automationMode={applicationAutomationMode}
-          onAutomationModeChange={(mode) => {
-            setApplicationAutomationMode(mode);
-            setIsApplicationAssistConfirmed(false);
-            setIsSubmissionAuthorizationConfirmed(false);
-          }}
-          onScan={scanApplicationForAutomation}
-          isScanning={isApplicationAutomationScanning}
-          isLaunching={isApplicationAssistLaunching}
-          onClose={closeApplicationAssist}
-          onLaunch={launchApplicationAssist}
-        />
-      )}
+        {isApplicationAssistOpen && selected && (
+          <ApplicationAssistModal
+            t={t}
+            uiLanguage={uiLanguage}
+            selected={selected}
+            resumeVersion={selectedJobResumeVersion}
+            candidateProfile={candidateProfile}
+            onProfileChange={updateCandidateProfile}
+            authorization={applicationAssistAuthorization}
+            onAuthorizationToggle={toggleApplicationAssistAuthorization}
+            isConfirmed={isApplicationAssistConfirmed}
+            onConfirmationChange={setIsApplicationAssistConfirmed}
+            packet={applicationFieldPacket}
+            canLaunch={canLaunchCurrentApplicationAssist && Boolean(applicationPreflight?.ready)}
+            contactValidation={applicationContactValidation}
+            previousAudit={selectedApplicationAssist}
+            sourceChanged={applicationAssistSourceChanged}
+            preflight={applicationPreflight}
+            acknowledgements={applicationAssistAcknowledgements}
+            onAcknowledgementsChange={setApplicationAssistAcknowledgements}
+            onCopyFields={copyApplicationFields}
+            automationCapabilities={applicationAutomationCapabilities}
+            automationMode={applicationAutomationMode}
+            onAutomationModeChange={(mode) => {
+              setApplicationAutomationMode(mode);
+              setIsApplicationAssistConfirmed(false);
+              setIsSubmissionAuthorizationConfirmed(false);
+            }}
+            onScan={scanApplicationForAutomation}
+            isScanning={isApplicationAutomationScanning}
+            isLaunching={isApplicationAssistLaunching}
+            onClose={closeApplicationAssist}
+            onLaunch={launchApplicationAssist}
+          />
+        )}
 
-      {isSubmissionReviewOpen && selected && applicationAutomationScan && submissionReview && (
-        <ApplicationSubmissionReviewModal
-          t={t}
-          uiLanguage={uiLanguage}
-          selected={selected}
-          scan={applicationAutomationScan}
-          review={submissionReview}
-          submissionPreflight={submissionPreflight}
-          authorizationConfirmed={isSubmissionAuthorizationConfirmed}
-          onAuthorizationConfirmed={setIsSubmissionAuthorizationConfirmed}
-          onFieldChange={updateSubmissionReviewField}
-          onSaveAnswer={saveSubmissionAnswer}
-          onClose={() => closeSubmissionReview()}
-          onExecute={executeSubmissionReviewOnce}
-          isExecuting={isSubmissionExecuting}
-        />
-      )}
+        {isSubmissionReviewOpen && selected && applicationAutomationScan && submissionReview && (
+          <ApplicationSubmissionReviewModal
+            t={t}
+            uiLanguage={uiLanguage}
+            selected={selected}
+            scan={applicationAutomationScan}
+            review={submissionReview}
+            submissionPreflight={submissionPreflight}
+            authorizationConfirmed={isSubmissionAuthorizationConfirmed}
+            onAuthorizationConfirmed={setIsSubmissionAuthorizationConfirmed}
+            onFieldChange={updateSubmissionReviewField}
+            onSaveAnswer={saveSubmissionAnswer}
+            onClose={() => closeSubmissionReview()}
+            onExecute={executeSubmissionReviewOnce}
+            isExecuting={isSubmissionExecuting}
+          />
+        )}
 
-      {printResumeVersion && !isPrintRequested && (
-        <ResumeExportModal
-          t={t}
-          version={printResumeVersion}
-          pageSize={resumePageSize}
-          onPageSizeChange={setResumePageSize}
-          onClose={closeResumeExport}
-          onPrint={confirmResumePrint}
-        />
-      )}
+        {printResumeVersion && !isPrintRequested && (
+          <ResumeExportModal
+            t={t}
+            version={printResumeVersion}
+            pageSize={resumePageSize}
+            onPageSizeChange={setResumePageSize}
+            onClose={closeResumeExport}
+            onPrint={confirmResumePrint}
+          />
+        )}
 
-      {isCustomDirectionOpen && (
-        <CustomDirectionModal
-          t={t}
-          uiLanguage={uiLanguage}
-          directions={customDirections}
-          draft={customDirectionDraft}
-          onDraftChange={setCustomDirectionDraft}
-          onDelete={deleteCustomDirection}
-          onClose={() => setIsCustomDirectionOpen(false)}
-          onSave={saveCustomDirection}
-        />
-      )}
+        {isCustomDirectionOpen && (
+          <CustomDirectionModal
+            t={t}
+            uiLanguage={uiLanguage}
+            directions={customDirections}
+            draft={customDirectionDraft}
+            onDraftChange={setCustomDirectionDraft}
+            onDelete={deleteCustomDirection}
+            onClose={() => setIsCustomDirectionOpen(false)}
+            onSave={saveCustomDirection}
+          />
+        )}
 
-      {isImportOpen && (
-        <ImportJobModal
-          t={t}
-          jd={jobDescriptionDraft}
-          company={importCompanyDraft}
-          role={importRoleDraft}
-          url={importUrlDraft}
-          onJdChange={setJobDescriptionDraft}
-          onCompanyChange={setImportCompanyDraft}
-          onRoleChange={setImportRoleDraft}
-          onUrlChange={setImportUrlDraft}
-          onClose={() => setIsImportOpen(false)}
-          onGenerate={generatePacket}
-        />
-      )}
+        {isImportOpen && (
+          <ImportJobModal
+            t={t}
+            jd={jobDescriptionDraft}
+            company={importCompanyDraft}
+            role={importRoleDraft}
+            url={importUrlDraft}
+            onJdChange={setJobDescriptionDraft}
+            onCompanyChange={setImportCompanyDraft}
+            onRoleChange={setImportRoleDraft}
+            onUrlChange={setImportUrlDraft}
+            onClose={() => setIsImportOpen(false)}
+            onGenerate={generatePacket}
+          />
+        )}
+      </Suspense>
 
       {toast && (
         <div className="toast" role="status">
