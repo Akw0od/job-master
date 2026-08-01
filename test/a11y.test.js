@@ -7,6 +7,7 @@ import { getNextTabKey } from "../src/services/tabNavigation.js";
 const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
 const applicationAssistSource = readFileSync(new URL("../src/components/modals/ApplicationAssistModal.jsx", import.meta.url), "utf8");
 const submissionReviewSource = readFileSync(new URL("../src/components/modals/ApplicationSubmissionReviewModal.jsx", import.meta.url), "utf8");
+const manualSubmissionSource = readFileSync(new URL("../src/components/modals/ManualSubmissionConfirmModal.jsx", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
 test("navigation, filters, search, and status controls expose stable accessible state", () => {
@@ -38,6 +39,17 @@ test("one-time submission review remains a labeled modal with an explicit exact 
   assert.match(submissionReviewSource, /disabled=\{!submissionPreflight\?\.ready \|\| !authorizationConfirmed \|\| isExecuting\}/);
   assert.match(submissionReviewSource, /工作授权|敏感字段/);
   assert.match(styles, /\.submission-exact-authorization/);
+});
+
+test("manual submission confirmation is labeled, evidence-bound, and keyboard-contained", () => {
+  assert.match(manualSubmissionSource, /role="dialog" aria-modal="true"/);
+  assert.match(manualSubmissionSource, /aria-labelledby="manual-submission-title"/);
+  assert.match(manualSubmissionSource, /useDialogFocus/);
+  assert.match(manualSubmissionSource, /type="radio" name="manual-submission-evidence"/);
+  assert.match(manualSubmissionSource, /type="datetime-local"/);
+  assert.match(manualSubmissionSource, /disabled=\{!preflight\?\.ready\}/);
+  assert.match(manualSubmissionSource, /记录指纹，不保存邮件、答案或网址/);
+  assert.match(styles, /\.manual-evidence-grid/);
 });
 
 test("narrow-screen modal, brand, and reduced-motion safeguards remain present", () => {

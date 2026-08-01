@@ -4812,6 +4812,212 @@ progress::-webkit-progress-value {
   accent-color: #3458db;
 }
 
+.manual-submission-modal {
+  width: min(700px, calc(100vw - 32px));
+}
+
+.manual-submission-target {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid #e2e5ec;
+  border-radius: 8px;
+  background: #fafbfc;
+}
+
+.manual-submission-target > span,
+.manual-confirmation-field > span,
+.manual-evidence-fieldset legend,
+.manual-receipt-summary span {
+  color: #70788b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.manual-submission-target strong {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #273044;
+  font-size: 13px;
+}
+
+.manual-submission-target svg {
+  color: #2f8b5b;
+}
+
+.manual-confirmation-field {
+  display: grid;
+  gap: 8px;
+}
+
+.manual-confirmation-field select,
+.manual-confirmation-field input {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid #dfe2e9;
+  border-radius: 8px;
+  outline: 0;
+  color: #2d3445;
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+}
+
+.manual-confirmation-field select:focus,
+.manual-confirmation-field input:focus {
+  border-color: #9aacec;
+  box-shadow: 0 0 0 3px rgba(52, 88, 219, 0.08);
+}
+
+.manual-submission-missing {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 13px;
+  border: 1px solid #e7dcae;
+  border-radius: 8px;
+  color: #6f5d1d;
+  background: #fffbed;
+}
+
+.manual-submission-missing > svg {
+  align-self: start;
+  margin-top: 2px;
+}
+
+.manual-submission-missing div {
+  display: grid;
+  gap: 3px;
+}
+
+.manual-submission-missing strong,
+.manual-submission-missing p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.manual-submission-missing .button {
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
+.manual-evidence-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.manual-evidence-fieldset legend {
+  margin-bottom: 8px;
+}
+
+.manual-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.manual-evidence-grid label {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #e1e4eb;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.manual-evidence-grid label.selected {
+  border-color: #9fb0ec;
+  background: #f5f7ff;
+  box-shadow: inset 0 0 0 1px rgba(52, 88, 219, 0.08);
+}
+
+.manual-evidence-grid input {
+  width: 16px;
+  height: 16px;
+  margin: 1px 0 0;
+  accent-color: #3458db;
+}
+
+.manual-evidence-grid label > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.manual-evidence-grid strong {
+  color: #2e3547;
+  font-size: 12px;
+}
+
+.manual-evidence-grid small {
+  color: #737b8e;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.manual-receipt-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid #e1e4ea;
+  border-radius: 8px;
+  background: #fafbfc;
+}
+
+.manual-receipt-summary > div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 12px;
+  border-right: 1px solid #e5e7ed;
+}
+
+.manual-receipt-summary > div:last-child {
+  border-right: 0;
+}
+
+.manual-receipt-summary strong {
+  overflow: hidden;
+  color: #2f3547;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.manual-submission-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 11px 12px;
+  border: 1px solid #e7dcae;
+  border-radius: 8px;
+  color: #756322;
+  background: #fffbed;
+}
+
+.manual-submission-warning svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.manual-submission-warning p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .action-stack {
   display: grid;
   gap: 12px;
@@ -7724,6 +7930,29 @@ progress::-webkit-progress-value {
 
   .submission-field-heading code {
     max-width: 100%;
+  }
+
+  .manual-evidence-grid,
+  .manual-receipt-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .manual-receipt-summary > div {
+    border-right: 0;
+    border-bottom: 1px solid #e5e7ed;
+  }
+
+  .manual-receipt-summary > div:last-child {
+    border-bottom: 0;
+  }
+
+  .manual-submission-missing {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .manual-submission-missing .button {
+    grid-column: 1 / -1;
+    width: 100%;
   }
 
   .application-table-shell {

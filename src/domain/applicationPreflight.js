@@ -7,6 +7,10 @@ import { validateSubmissionAuthorization } from "./applicationSubmission.js";
 const text = (value, max = 160) => typeof value === "string" && value.trim().length <= max ? value.trim() : "";
 const object = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {};
 const authorizedApplicationGroups = new Set(["contact", "education", "experience"]);
+export const manualSubmissionEvidenceCodes = Object.freeze([
+  "success-page", "confirmation-email", "ats-account", "confirmation-id",
+]);
+const manualSubmissionEvidenceCodeSet = new Set(manualSubmissionEvidenceCodes);
 export const applicationReceiptFreshnessMs = 24 * 60 * 60 * 1000;
 const hash = (value) => {
   let total = 2166136261;
@@ -49,6 +53,19 @@ function canonicalApplicationUrl(value) {
 function sensitiveExclusionCount(value) {
   if (value === true) return 1;
   return Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+export function buildApplicationReceiptFingerprint(jobInput, applicationUrlInput = "") {
+  const job = object(jobInput);
+  const receipt = normalizeSourceReceipt(job);
+  const applicationUrl = canonicalApplicationUrl(applicationUrlInput || job.applyUrl || job.url);
+  const receiptUrl = canonicalApplicationUrl(receipt.applyUrl);
+  if (!applicationUrl || !receiptUrl) return "";
+  return `pf1-${hash(JSON.stringify({
+    jobId: text(job.id, 120), provider: receipt.provider, providerJobId: receipt.providerJobId,
+    verificationState: receipt.verificationState, verifiedAt: receipt.verifiedAt,
+    urlHash: hash(applicationUrl), receiptUrlHash: hash(receiptUrl),
+  }))}`;
 }
 
 export function hasFreshOpenSourceReceipt(job, now = Date.now()) {
@@ -120,12 +137,51 @@ export function evaluateApplicationPreflight(input = {}) {
   check(checks, "no-background-submit", "invariant", true);
   check(checks, "exact-review-before-submit", "invariant", true);
   if (warnings.length && !warningAcknowledged(source)) blocking.push("warnings-acknowledgement-required");
-  const receiptFingerprint = `pf1-${hash(JSON.stringify({
-    jobId: text(job.id, 120), provider: receipt.provider, providerJobId: receipt.providerJobId,
-    verificationState: receipt.verificationState, verifiedAt: receipt.verifiedAt,
-    urlHash: hash(applicationUrl), receiptUrlHash: hash(receiptUrl),
-  }))}`;
+  const receiptFingerprint = buildApplicationReceiptFingerprint(job, applicationUrl);
   return { ready: blocking.length === 0, blocking: [...new Set(blocking)], warnings: [...new Set(warnings)], checks, receiptFingerprint };
+}
+
+/**
+ * A narrow gate for recording a submission completed by the candidate outside Jobmaster.
+ * It binds a provider-facing success signal to one saved job resume and one source receipt,
+ * while returning only bounded codes and fingerprints.
+ */
+export function evaluateManualSubmissionConfirmation(input = {}) {
+  const source = object(input);
+  const job = object(source.job);
+  const receipt = normalizeSourceReceipt(job);
+  const checks = [];
+  const blocking = [];
+  const warnings = [];
+  const block = (code, passed) => { check(checks, code, "blocking", passed); if (!passed) blocking.push(code); };
+  const warn = (code, passed) => { check(checks, code, "warning", passed); if (!passed) warnings.push(code); };
+  const applicationUrl = canonicalApplicationUrl(source.applicationUrl || job.applyUrl || job.url);
+  const receiptUrl = canonicalApplicationUrl(receipt.applyUrl);
+  const submittedAt = text(source.submittedAt, 40);
+  const submittedTime = Date.parse(submittedAt);
+  const now = typeof source.now === "number" ? source.now : Date.parse(source.now ?? new Date().toISOString());
+
+  block("specific-https-application-url", Boolean(applicationUrl && isSpecificApplicationUrl(applicationUrl)));
+  block("receipt-apply-url-match", Boolean(applicationUrl && receiptUrl && applicationUrl === receiptUrl));
+  block("saved-job-derived-resume", resumeIsUsable(source.resumeVersion, job.id, source.resumeVersions));
+  block("submitted-at-valid", Number.isFinite(submittedTime));
+  block("submitted-at-not-future", Number.isFinite(submittedTime) && Number.isFinite(now) && submittedTime <= now + 5 * 60 * 1000);
+  block("provider-facing-evidence", manualSubmissionEvidenceCodeSet.has(source.evidenceCode));
+  block("exact-manual-confirmation", source.acknowledged === true);
+
+  warn("receipt-needs-review", !["manual", "needs-review", "unknown"].includes(receipt.verificationState));
+  warn("receipt-stale", hasFreshOpenSourceReceipt(job, Number.isFinite(now) ? now : Date.now()));
+  warn("provider-id-missing", Boolean(receipt.providerJobId));
+  warn("job-unavailable", job.verificationStatus !== "unavailable" && receipt.verificationState !== "closed");
+
+  const receiptFingerprint = buildApplicationReceiptFingerprint(job, applicationUrl);
+  return {
+    ready: blocking.length === 0 && Boolean(receiptFingerprint),
+    blocking: [...new Set(blocking)],
+    warnings: [...new Set(warnings)],
+    checks,
+    receiptFingerprint,
+  };
 }
 
 /**

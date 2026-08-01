@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   addBusinessDays,
+  buildManualSubmissionPayloadFingerprint,
   buildApplicationAnalytics,
   buildInterviewPrepOutline,
   buildTodayActionQueue,
   normalizeApplicationOperationsById,
   recordApplicationFollowUp,
   recordConfirmedSubmission,
+  requiresConfirmedSubmission,
   scheduleApplicationFollowUp,
   updateApplicationInterview,
 } from "../src/domain/applicationOperations.js";
@@ -27,10 +29,14 @@ test("confirmed submissions schedule a five-business-day follow-up and preserve 
     resumeVersionId: "resume-1",
     receiptFingerprint: "pf1-abcd",
     payloadFingerprint: "sp1-efgh",
+    confirmationMode: "automation-confirmed",
+    evidenceCode: "provider-confirmation",
   });
   assert.equal(recorded.changed, true);
   assert.equal(recorded.operationsById["job-1"].followUpAt, "2026-08-07T12:00:00.000Z");
   assert.equal(JSON.stringify(recorded.operationsById).includes("https://"), false);
+  assert.equal(recorded.operationsById["job-1"].submittedPackage.confirmationMode, "automation-confirmed");
+  assert.equal(recorded.operationsById["job-1"].submittedPackage.evidenceCode, "provider-confirmation");
 
   const rescheduled = scheduleApplicationFollowUp(recorded.operationsById, "job-1", "2026-08-10T12:00:00.000Z");
   assert.equal(rescheduled.operationsById["job-1"].followUpAt, "2026-08-10T12:00:00.000Z");
@@ -38,6 +44,37 @@ test("confirmed submissions schedule a five-business-day follow-up and preserve 
   const followedUp = recordApplicationFollowUp(rescheduled.operationsById, "job-1", "2026-08-10T18:00:00.000Z");
   assert.equal(followedUp.operationsById["job-1"].lastContactAt, "2026-08-10T18:00:00.000Z");
   assert.equal("followUpAt" in followedUp.operationsById["job-1"], false);
+});
+
+test("manual confirmation fingerprints bind one application, receipt, resume, evidence, and time", () => {
+  const input = {
+    applicationId: "job-1",
+    resumeVersionId: "job-v1",
+    receiptFingerprint: "pf1-abcd",
+    evidenceCode: "confirmation-email",
+    submittedAt: "2026-07-31T12:00:00.000Z",
+  };
+  const fingerprint = buildManualSubmissionPayloadFingerprint(input);
+  assert.match(fingerprint, /^mp1-[a-f0-9]{8}$/);
+  assert.notEqual(buildManualSubmissionPayloadFingerprint({ ...input, evidenceCode: "ats-account" }), fingerprint);
+  assert.equal(buildManualSubmissionPayloadFingerprint({ ...input, evidenceCode: "free-text" }), "");
+
+  const recorded = recordConfirmedSubmission({}, "job-1", {
+    ...input,
+    payloadFingerprint: fingerprint,
+    confirmationMode: "manual-confirmed",
+  });
+  assert.equal(recorded.changed, true);
+  assert.equal(recorded.operationsById["job-1"].submittedPackage.evidenceCode, "confirmation-email");
+  assert.equal(requiresConfirmedSubmission("面试", recorded.operationsById["job-1"]), false);
+  assert.equal(requiresConfirmedSubmission("已投递", {}), true);
+  assert.equal(requiresConfirmedSubmission("准备中", {}), false);
+
+  const missingEvidence = recordConfirmedSubmission({}, "job-1", {
+    ...input,
+    payloadFingerprint: fingerprint,
+  });
+  assert.equal(missingEvidence.changed, false);
 });
 
 test("today queue favors interviews, due follow-ups, verification, tailoring, and reviewed applications", () => {

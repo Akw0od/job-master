@@ -50,7 +50,12 @@ import {
   revertLatestApplicationStatusChange,
   transitionApplicationStatus,
 } from "./domain/applicationEvents";
-import { evaluateApplicationPreflight, evaluateSubmissionPreflight, hasFreshOpenSourceReceipt } from "./domain/applicationPreflight";
+import {
+  evaluateApplicationPreflight,
+  evaluateManualSubmissionConfirmation,
+  evaluateSubmissionPreflight,
+  hasFreshOpenSourceReceipt,
+} from "./domain/applicationPreflight";
 import { findReusableApplicationAnswer, removeApplicationAnswer, upsertApplicationAnswer } from "./domain/applicationAnswers";
 import {
   authorizeSubmissionReview,
@@ -59,11 +64,13 @@ import {
 } from "./domain/applicationSubmission";
 import {
   addBusinessDays,
+  buildManualSubmissionPayloadFingerprint,
   buildApplicationAnalytics,
   buildInterviewPrepOutline,
   buildTodayActionQueue,
   recordApplicationFollowUp,
   recordConfirmedSubmission,
+  requiresConfirmedSubmission,
   scheduleApplicationFollowUp,
   updateApplicationInterview,
 } from "./domain/applicationOperations";
@@ -138,6 +145,8 @@ const ApplicationAssistModal = lazy(() => import("./components/modals/Applicatio
   .then((module) => ({ default: module.ApplicationAssistModal })));
 const ApplicationSubmissionReviewModal = lazy(() => import("./components/modals/ApplicationSubmissionReviewModal")
   .then((module) => ({ default: module.ApplicationSubmissionReviewModal })));
+const ManualSubmissionConfirmModal = lazy(() => import("./components/modals/ManualSubmissionConfirmModal")
+  .then((module) => ({ default: module.ManualSubmissionConfirmModal })));
 const EditModal = lazy(() => import("./components/modals/EditModal")
   .then((module) => ({ default: module.EditModal })));
 const CustomDirectionModal = lazy(() => import("./components/modals/JobInputModals")
@@ -207,6 +216,13 @@ const receiptValueLabels = {
   none: "未提供",
   "legacy-unknown": "旧记录未标明算法",
 };
+const submissionEvidenceLabels = {
+  "success-page": "官网成功页",
+  "confirmation-email": "确认邮件",
+  "ats-account": "ATS 账户记录",
+  "confirmation-id": "确认编号",
+  "provider-confirmation": "招聘方确认",
+};
 const funnelExclusionLabels = {
   market: "市场不匹配",
   employmentType: "岗位类型不匹配",
@@ -246,7 +262,7 @@ function applicationEventLabel(event, t) {
     "application.opened": "已打开具体申请页",
     "submission.authorized": "已创建单次投递授权",
     "submission.started": "单次自动化已开始",
-    "submission.completed": "官网已确认投递成功",
+    "submission.completed": "已确认投递成功",
     "submission.paused": "自动化已停在人工处理点",
     "submission.failed": "单次自动化执行失败",
   };
@@ -537,6 +553,7 @@ export function App() {
   const [applicationAnswerLibrary, setApplicationAnswerLibrary] = useState(() => savedDashboard.applicationAnswerLibrary ?? { schemaVersion: 1, answers: [] });
   const [submissionSessionsById, setSubmissionSessionsById] = useState(() => savedDashboard.submissionSessionsById ?? {});
   const [applicationOperationsById, setApplicationOperationsById] = useState(() => savedDashboard.applicationOperationsById ?? {});
+  const [manualSubmissionConfirmation, setManualSubmissionConfirmation] = useState(null);
   const [applicationAutomationCapabilities, setApplicationAutomationCapabilities] = useState(null);
   const [applicationAutomationMode, setApplicationAutomationMode] = useState("manual-handoff");
   const [applicationAutomationScan, setApplicationAutomationScan] = useState(null);
@@ -616,6 +633,31 @@ export function App() {
         || version.target === `${selected.company} ${selected.role}`
       ))
     : null;
+  const manualSubmissionJob = manualSubmissionConfirmation
+    ? applications.find((job) => job.id === manualSubmissionConfirmation.applicationId) ?? null
+    : null;
+  const manualSubmissionResumeVersions = manualSubmissionJob
+    ? usableResumeVersions.filter((version) => version.layer === "job" && version.jobId === manualSubmissionJob.id)
+    : [];
+  const manualSubmissionResumeVersion = manualSubmissionResumeVersions.find(
+    (version) => version.id === manualSubmissionConfirmation?.resumeVersionId,
+  ) ?? null;
+  const manualSubmissionPreflight = manualSubmissionJob && manualSubmissionConfirmation
+    ? evaluateManualSubmissionConfirmation({
+        job: manualSubmissionJob,
+        applicationUrl: manualSubmissionJob.applyUrl || (manualSubmissionJob.source === "手动 JD" ? manualSubmissionJob.url : ""),
+        resumeVersion: manualSubmissionResumeVersion,
+        resumeVersions,
+        submittedAt: manualSubmissionConfirmation.submittedAt,
+        evidenceCode: manualSubmissionConfirmation.evidenceCode,
+        acknowledged: manualSubmissionConfirmation.acknowledged,
+      })
+    : null;
+  const manualSubmissionReceiptSummary = manualSubmissionJob ? {
+    provider: sourceReceiptValue(manualSubmissionJob.sourceReceipt?.provider, t),
+    providerJobId: manualSubmissionJob.sourceReceipt?.providerJobId || t("未提供"),
+    verifiedAt: formatReceiptTimestamp(manualSubmissionJob.sourceReceipt?.verifiedAt, uiLanguage, t),
+  } : null;
   const selectedJobResumeContent = selectedJobResumeVersion?.content ?? "";
   const applicationProfileName = String(candidateProfile.name ?? "");
   const applicationProfileEmail = String(candidateProfile.email ?? "");
@@ -801,6 +843,10 @@ export function App() {
       })
     : null;
   const selectedApplicationEvents = selected ? getApplicationEvents(applicationState, selected.id) : [];
+  const selectedApplicationOperation = selected ? applicationOperationsById[selected.id] ?? {} : {};
+  const selectedSubmittedResume = selectedApplicationOperation.submittedPackage
+    ? resumeVersions.find((version) => version.id === selectedApplicationOperation.submittedPackage.resumeVersionId) ?? null
+    : null;
   const selectedStatusRevertibility = selected ? getApplicationStatusRevertibility(applicationState, selected.id) : { canRevert: false };
   const selectedNormalizedStatus = selected ? normalizeApplicationStatus(selected.status) : "";
   const todayActionQueue = buildTodayActionQueue({
@@ -1978,9 +2024,31 @@ export function App() {
     setIsQueueCollapsed(true);
   }
 
+  function openManualSubmissionConfirmation(applicationId, targetStatus) {
+    const job = applications.find((item) => item.id === applicationId);
+    if (!job) return;
+    const jobVersions = resumeVersions.filter((version) => (
+      !isPlaceholderResume(version.content) && version.layer === "job" && version.jobId === applicationId
+    ));
+    setSelectedId(applicationId);
+    setManualSubmissionConfirmation({
+      applicationId,
+      targetStatus: normalizeApplicationStatus(targetStatus),
+      resumeVersionId: jobVersions.at(-1)?.id ?? "",
+      evidenceCode: "",
+      submittedAt: toDateTimeLocalValue(new Date().toISOString()),
+      acknowledged: false,
+    });
+  }
+
   function updateApplicationStatus(applicationId, status, updated = "刚刚更新") {
     if (!applicationId) return;
+    if (requiresConfirmedSubmission(status, applicationOperationsById[applicationId])) {
+      openManualSubmissionConfirmation(applicationId, status);
+      return;
+    }
     setApplicationState((current) => transitionApplicationStatus(current, applicationId, status, { updated }).state);
+    setReviewStatus(status);
     if (status === "已投递") {
       setApplicationOperationsById((current) => {
         if (current[applicationId]?.followUpAt) return current;
@@ -2026,9 +2094,65 @@ export function App() {
   }
 
   function updateSelectedReviewStatus(status) {
-    setReviewStatus(status);
     if (!selected?.id) return;
     updateApplicationStatus(selected.id, status);
+  }
+
+  function closeManualSubmissionConfirmation() {
+    setManualSubmissionConfirmation(null);
+  }
+
+  function prepareManualSubmissionResume() {
+    if (!manualSubmissionJob) return;
+    const job = manualSubmissionJob;
+    setManualSubmissionConfirmation(null);
+    selectJob(job);
+    setActiveTab("定制简历");
+  }
+
+  function confirmManualSubmission() {
+    if (!manualSubmissionJob || !manualSubmissionConfirmation || !manualSubmissionResumeVersion
+      || !manualSubmissionPreflight?.ready) return;
+    const submittedAt = new Date(manualSubmissionConfirmation.submittedAt).toISOString();
+    const payloadFingerprint = buildManualSubmissionPayloadFingerprint({
+      applicationId: manualSubmissionJob.id,
+      resumeVersionId: manualSubmissionResumeVersion.id,
+      receiptFingerprint: manualSubmissionPreflight.receiptFingerprint,
+      evidenceCode: manualSubmissionConfirmation.evidenceCode,
+      submittedAt,
+    });
+    if (!payloadFingerprint) {
+      setToast(t("投递确认信息无效，请重新核对。"));
+      return;
+    }
+    const metadata = {
+      resumeVersionId: manualSubmissionResumeVersion.id,
+      sourceReceiptFingerprint: manualSubmissionPreflight.receiptFingerprint,
+      payloadFingerprint,
+      submissionMode: "manual-confirmed",
+      resultCode: manualSubmissionConfirmation.evidenceCode,
+      confirmationFingerprint: payloadFingerprint,
+    };
+    setApplicationOperationsById((current) => recordConfirmedSubmission(current, manualSubmissionJob.id, {
+      submittedAt,
+      resumeVersionId: manualSubmissionResumeVersion.id,
+      receiptFingerprint: manualSubmissionPreflight.receiptFingerprint,
+      payloadFingerprint,
+      confirmationMode: "manual-confirmed",
+      evidenceCode: manualSubmissionConfirmation.evidenceCode,
+    }).operationsById);
+    setApplicationState((current) => {
+      const completed = appendSubmissionCompleted(current, manualSubmissionJob.id, { metadata });
+      return transitionApplicationStatus(
+        completed.changed ? completed.state : current,
+        manualSubmissionJob.id,
+        manualSubmissionConfirmation.targetStatus,
+        { updated: "刚刚确认投递" },
+      ).state;
+    });
+    setReviewStatus(manualSubmissionConfirmation.targetStatus);
+    setManualSubmissionConfirmation(null);
+    setToast(t("已记录投递证据与实际简历版本，并安排五个工作日后的跟进。"));
   }
 
   function revertSelectedReviewStatus() {
@@ -2491,6 +2615,8 @@ export function App() {
           resumeVersionId: result.session.resumeVersionId,
           receiptFingerprint: result.session.receiptFingerprint,
           payloadFingerprint: result.session.payloadFingerprint,
+          confirmationMode: "automation-confirmed",
+          evidenceCode: result.session.resultCode,
         }).operationsById);
         setReviewStatus("已投递");
         setIsSubmissionReviewOpen(false);
@@ -3748,7 +3874,7 @@ export function App() {
                             <strong role="cell">{formatJobSignalScore(job)}</strong>
                             <label role="cell" className="application-status-select">
                               <StatusDot status={normalizeApplicationStatus(job.status)} />
-                              <select aria-label={uiLanguage === "en" ? `Update ${job.company} ${job.role} status` : `更新${job.company}${job.role}的投递状态`} value={normalizeApplicationStatus(job.status)} onChange={(event) => { setSelectedId(job.id); setReviewStatus(event.target.value); updateApplicationStatus(job.id, event.target.value); }}>
+                              <select aria-label={uiLanguage === "en" ? `Update ${job.company} ${job.role} status` : `更新${job.company}${job.role}的投递状态`} value={normalizeApplicationStatus(job.status)} onChange={(event) => { setSelectedId(job.id); updateApplicationStatus(job.id, event.target.value); }}>
                                 {statusOptions.filter((status) => status !== "已归档").map((status) => <option key={status} value={status}>{t(status)}</option>)}
                               </select>
                               <CaretDown size={14} />
@@ -3908,6 +4034,23 @@ export function App() {
             <span>{t("当前草稿")}</span>
             <strong>{t(selectedJobResumeVersion ? "岗位版已保存" : "尚未生成岗位版")}</strong>
           </div>
+          {selectedApplicationOperation.submittedPackage ? (
+            <div className="rail-group">
+              <span>{t("已投递版本")}</span>
+              <strong>{selectedSubmittedResume?.name ?? selectedApplicationOperation.submittedPackage.resumeVersionId}</strong>
+              <small>
+                {formatReceiptTimestamp(selectedApplicationOperation.submittedPackage.confirmedAt, uiLanguage, t)}
+                {` · ${t(submissionEvidenceLabels[selectedApplicationOperation.submittedPackage.evidenceCode] ?? "旧记录未标明确认方式")}`}
+              </small>
+            </div>
+          ) : ["已投递", "面试", "Offer", "未通过"].includes(selectedNormalizedStatus) ? (
+            <div className="application-assist-status">
+              <span>{t("投递确认")}</span>
+              <strong>{t("这条旧记录还没有绑定投递证据与简历版本")}</strong>
+              <p>{t("补录后，跟进和面试准备才会引用准确的已投递版本。")}</p>
+              <button onClick={() => openManualSubmissionConfirmation(selected.id, selectedNormalizedStatus)}>{t("补录投递确认")}</button>
+            </div>
+          ) : null}
           <div className="rail-group">
             <span>{t("使用简历")}</span>
             <button className="link-row" onClick={() => goToReviewTab("定制简历")}>
@@ -4024,6 +4167,36 @@ export function App() {
             onCancel={cancelPendingResumeRewrite}
             onContinueOnce={() => approvePendingResumeRewrite("once")}
             onRemember={() => approvePendingResumeRewrite("remember")}
+          />
+        )}
+
+        {manualSubmissionConfirmation && manualSubmissionJob && manualSubmissionReceiptSummary && (
+          <ManualSubmissionConfirmModal
+            t={t}
+            job={manualSubmissionJob}
+            targetStatus={manualSubmissionConfirmation.targetStatus}
+            resumeVersions={manualSubmissionResumeVersions}
+            resumeVersionId={manualSubmissionConfirmation.resumeVersionId}
+            onResumeVersionChange={(resumeVersionId) => setManualSubmissionConfirmation((current) => (
+              current ? { ...current, resumeVersionId, acknowledged: false } : current
+            ))}
+            evidenceCode={manualSubmissionConfirmation.evidenceCode}
+            onEvidenceCodeChange={(evidenceCode) => setManualSubmissionConfirmation((current) => (
+              current ? { ...current, evidenceCode, acknowledged: false } : current
+            ))}
+            submittedAt={manualSubmissionConfirmation.submittedAt}
+            onSubmittedAtChange={(submittedAt) => setManualSubmissionConfirmation((current) => (
+              current ? { ...current, submittedAt, acknowledged: false } : current
+            ))}
+            acknowledged={manualSubmissionConfirmation.acknowledged}
+            onAcknowledgedChange={(acknowledged) => setManualSubmissionConfirmation((current) => (
+              current ? { ...current, acknowledged } : current
+            ))}
+            preflight={manualSubmissionPreflight}
+            receiptSummary={manualSubmissionReceiptSummary}
+            onPrepareResume={prepareManualSubmissionResume}
+            onClose={closeManualSubmissionConfirmation}
+            onConfirm={confirmManualSubmission}
           />
         )}
 

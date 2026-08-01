@@ -1,11 +1,14 @@
-import { isTrackedApplication, normalizeApplicationStatus } from "./applications.js";
-import { hasFreshOpenSourceReceipt } from "./applicationPreflight.js";
+import { hashText, isTrackedApplication, normalizeApplicationStatus } from "./applications.js";
+import { hasFreshOpenSourceReceipt, manualSubmissionEvidenceCodes } from "./applicationPreflight.js";
 
 export const applicationOperationsSchemaVersion = 1;
 
 const maxApplications = 100;
 const maxInterviewQuestions = 20;
 const maxStarStories = 12;
+const submissionConfirmationModes = new Set(["manual-confirmed", "automation-confirmed"]);
+const submissionEvidenceCodes = new Set([...manualSubmissionEvidenceCodes, "provider-confirmation"]);
+const postSubmissionStatuses = new Set(["已投递", "面试", "Offer", "未通过"]);
 const safeText = (value, max) => typeof value === "string" ? value.trim().slice(0, max) : "";
 const safeCode = (value, max = 160) => {
   const normalized = safeText(value, max);
@@ -24,7 +27,16 @@ function normalizeSubmittedPackage(value) {
   const payloadFingerprint = safeCode(value.payloadFingerprint);
   const confirmedAt = isoTime(value.confirmedAt);
   if (!resumeVersionId || !receiptFingerprint || !payloadFingerprint || !confirmedAt) return null;
-  return { resumeVersionId, receiptFingerprint, payloadFingerprint, confirmedAt };
+  const confirmationMode = submissionConfirmationModes.has(value.confirmationMode) ? value.confirmationMode : "";
+  const evidenceCode = submissionEvidenceCodes.has(value.evidenceCode) ? value.evidenceCode : "";
+  if (Boolean(confirmationMode) !== Boolean(evidenceCode)) return null;
+  return {
+    resumeVersionId,
+    receiptFingerprint,
+    payloadFingerprint,
+    confirmedAt,
+    ...(confirmationMode ? { confirmationMode, evidenceCode } : {}),
+  };
 }
 
 function normalizeInterviewQuestion(value) {
@@ -106,6 +118,23 @@ export function addBusinessDays(value, days = 5) {
   return next.toISOString();
 }
 
+export function buildManualSubmissionPayloadFingerprint(input = {}) {
+  const applicationId = safeCode(input.applicationId, 120);
+  const resumeVersionId = safeCode(input.resumeVersionId);
+  const receiptFingerprint = safeCode(input.receiptFingerprint);
+  const evidenceCode = submissionEvidenceCodes.has(input.evidenceCode) ? input.evidenceCode : "";
+  const submittedAt = isoTime(input.submittedAt);
+  if (!applicationId || !resumeVersionId || !receiptFingerprint || !evidenceCode || !submittedAt) return "";
+  return `mp1-${hashText(JSON.stringify({
+    applicationId, resumeVersionId, receiptFingerprint, evidenceCode, submittedAt,
+  }))}`;
+}
+
+export function requiresConfirmedSubmission(statusInput, operationInput) {
+  const status = normalizeApplicationStatus(statusInput);
+  return postSubmissionStatuses.has(status) && !normalizeSubmittedPackage(operationInput?.submittedPackage);
+}
+
 export function recordConfirmedSubmission(operationsById, applicationIdInput, input = {}) {
   const current = normalizeApplicationOperationsById(operationsById);
   const applicationId = safeText(applicationIdInput, 120);
@@ -115,8 +144,11 @@ export function recordConfirmedSubmission(operationsById, applicationIdInput, in
     receiptFingerprint: input.receiptFingerprint,
     payloadFingerprint: input.payloadFingerprint,
     confirmedAt: submittedAt,
+    confirmationMode: input.confirmationMode,
+    evidenceCode: input.evidenceCode,
   });
-  if (!applicationId || !submittedAt || !submittedPackage) {
+  if (!applicationId || !submittedAt || !submittedPackage
+    || !submittedPackage.confirmationMode || !submittedPackage.evidenceCode) {
     return { operationsById: current, changed: false, reason: "invalid-submission" };
   }
   const followUpAt = isoTime(input.followUpAt) || addBusinessDays(submittedAt, 5);

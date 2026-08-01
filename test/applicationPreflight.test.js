@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   applicationReceiptFreshnessMs,
   evaluateApplicationPreflight,
+  evaluateManualSubmissionConfirmation,
   evaluateSubmissionPreflight,
   hasFreshOpenSourceReceipt,
 } from "../src/domain/applicationPreflight.js";
@@ -106,6 +107,32 @@ test("does not mutate input or leak sensitive content into the result", () => {
   assert.deepEqual(input, before);
   assert.equal(JSON.stringify(result).includes("jane@example.com"), false);
   assert.equal(JSON.stringify(result).includes("Highly private"), false);
+});
+
+test("manual submission confirmation requires provider evidence, an exact saved job resume, and a non-future time", () => {
+  const base = readyInput({
+    submittedAt: "2026-07-27T23:30:00.000Z",
+    evidenceCode: "confirmation-email",
+    acknowledged: true,
+  });
+  const ready = evaluateManualSubmissionConfirmation(base);
+  assert.equal(ready.ready, true);
+  assert.match(ready.receiptFingerprint, /^pf1-[a-f0-9]{8}$/);
+  assert.equal(JSON.stringify(ready).includes("jane@example.com"), false);
+  assert.equal(JSON.stringify(ready).includes("Resume content"), false);
+  assert.equal(JSON.stringify(ready).includes("https://"), false);
+
+  const noEvidence = evaluateManualSubmissionConfirmation({ ...base, evidenceCode: "user-note" });
+  assert.ok(noEvidence.blocking.includes("provider-facing-evidence"));
+  const wrongResume = evaluateManualSubmissionConfirmation({
+    ...base,
+    resumeVersion: { ...base.resumeVersion, layer: "direction" },
+  });
+  assert.ok(wrongResume.blocking.includes("saved-job-derived-resume"));
+  const future = evaluateManualSubmissionConfirmation({ ...base, submittedAt: "2026-07-29T00:00:00.000Z" });
+  assert.ok(future.blocking.includes("submitted-at-not-future"));
+  const notAcknowledged = evaluateManualSubmissionConfirmation({ ...base, acknowledged: false });
+  assert.ok(notAcknowledged.blocking.includes("exact-manual-confirmation"));
 });
 
 test("review-submit requires the exact authorized payload, current receipt, page snapshot, and bridge", () => {
