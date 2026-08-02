@@ -13,6 +13,11 @@
     "test:python": "python3 -m unittest discover -s tests -v",
     "lint": "eslint .",
     "audit:prod": "npm audit --omit=dev",
+    "skill:status": "python3 scripts/manage_skill.py status",
+    "skill:version": "python3 scripts/manage_skill.py version",
+    "skill:install": "python3 scripts/manage_skill.py install",
+    "skill:update": "python3 scripts/manage_skill.py update",
+    "skill:uninstall": "python3 scripts/manage_skill.py uninstall",
     "check": "npm run lint && npm test && npm run test:python && npm run build",
     "preview": "vite preview --host 127.0.0.1"
   },

@@ -26,20 +26,22 @@ Dashboard 默认从“找工作”开始。上传真实 Master Resume 后，可�
 
 ### 1. 安装 Skill
 
-推荐保留完整仓库，并把它链接到 Codex 的 Skill 目录。这样 Dashboard、脚本和 Skill 会保持在同一个版本：
+推荐保留完整仓库，并使用仓库内的生命周期管理器安装。它只复制 Git 跟踪的分发文件，不会把 `node_modules`、构建产物、运行输出或密钥带进 Skill 目录：
 
 ```bash
 git clone https://github.com/Akw0od/job-master.git
 cd job-master
-mkdir -p ~/.codex/skills
-ln -s "$(pwd)" ~/.codex/skills/resume-application-agent
+python3 scripts/manage_skill.py install
+python3 scripts/manage_skill.py status
 ```
 
-如果不想使用符号链接，也可以复制安装；执行前请确认目标目录不存在：
+管理器不会覆盖已有目录。若 `status` 显示旧版复制安装为 `unmanaged`，先审核该目录，再显式接管：
 
 ```bash
-cp -R . ~/.codex/skills/resume-application-agent
+python3 scripts/manage_skill.py update --adopt
 ```
+
+它会先把旧目录移动到 `~/.codex/skills/.jobmaster-skill-backups/`，再启用新版本。符号链接形式的目标会被拒绝，需先由用户确认并移除旧链接。
 
 重启 Codex 后，可以直接说：
 
@@ -52,6 +54,26 @@ cp -R . ~/.codex/skills/resume-application-agent
 ```text
 请安装并使用这个求职 Skill：https://github.com/Akw0od/job-master
 ```
+
+### Skill 升级、版本检查与卸载
+
+从最新仓库检出运行管理器：
+
+```bash
+git pull --ff-only
+python3 scripts/manage_skill.py version
+python3 scripts/manage_skill.py update
+```
+
+更新会保留安装目录中的 `.npmrc`、`.env*`、`data/profile_context.md`、`runs/` 和 `outputs/`。若检测到其他本地修改或额外文件，它会停止并要求先审核；只有明确接受备份后替换时才使用 `--force`。如果 Dashboard 依赖发生变化，请在用于运行 Dashboard 的仓库检出中重新执行 `npm install`。
+
+卸载不会直接删除数据，而是停用当前 Skill 并把完整目录移动到同一备份目录：
+
+```bash
+python3 scripts/manage_skill.py uninstall
+```
+
+安装、升级或卸载后，重启 Codex 或开始一个新任务，让 Skill 注册表重新加载。
 
 ### 2. 打开 Dashboard
 
@@ -154,9 +176,11 @@ runs/amazon-sde/
 ```text
 .
 |-- SKILL.md                    # Agent Skill 入口与安全规则
+|-- skill-release.json          # Skill 版本与规范来源
 |-- data/                       # 岗位 archetype 与公开示例事实库
 |-- examples/                   # 示例 JD
 |-- scripts/
+|   |-- manage_skill.py         # 安装、升级、检查与可恢复卸载
 |   |-- resume_agent.py         # 确定性申请包生成器
 |   `-- dev.mjs                 # 网站与本地 Agent 联合启动器
 |-- local-agent/                # Codex CLI 本地改写服务
@@ -198,7 +222,7 @@ Job Master 目前有两个互补入口：Agent 通过 [SKILL.md](./SKILL.md) 执
 - [x] 保留可搜索 PDF / DOCX 的页眉、章节、段落和项目符号结构，并提供 A4 / Letter 可选择文字的 PDF 打印导出。
 - [ ] 继续提升复杂双栏、表格、图标和扫描件的原版视觉还原；当前版本不会对无文本层扫描件伪造解析结果。
 - [ ] 使用专门测试账号完成更多真实提供方的“岗位详情 -> 定制简历 -> 官方站申请辅助 -> 确认回填”外部端到端验证；当前自动化由本地安全门和隔离测试覆盖，不声称已覆盖所有招聘站。
-- [ ] 为 Skill 增加可重复的安装、升级、卸载和版本检查流程。
+- [x] 为 Skill 增加可重复的安装、升级、卸载和版本检查流程，并为旧安装保留可恢复备份。
 
 ### P1：走向可用 SaaS
 

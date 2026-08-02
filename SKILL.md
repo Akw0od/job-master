@@ -56,6 +56,20 @@ The combined command starts the Vite interface and a localhost-only Codex CLI re
 
 Keep the full repository when installing the skill if the user wants this dashboard; copying only `SKILL.md` is not enough. Treat the uploaded resume as an immutable Master Resume, keep AI and manual edits in derived versions, and expose every change for human review. Browser-local drafts are not a cloud database, and bundled job pools are not a live job aggregation service.
 
+## Skill Lifecycle
+
+Run lifecycle commands from a current, complete repository checkout:
+
+```bash
+python3 scripts/manage_skill.py status
+python3 scripts/manage_skill.py version
+python3 scripts/manage_skill.py install
+python3 scripts/manage_skill.py update
+python3 scripts/manage_skill.py uninstall
+```
+
+`install` refuses an existing destination. A reviewed legacy copied installation requires `update --adopt`; a managed installation with local changes requires review before an explicit `--force`. Updates preserve `.npmrc`, `.env*`, `data/profile_context.md`, `runs/`, and `outputs/`, and move the previous installation into the sibling `.jobmaster-skill-backups/` directory. Uninstall is recoverable: it moves the active installation into that backup directory instead of deleting it. Symlinked destinations are not managed. Restart Codex or begin a new task after a lifecycle change so the installed Skill is reloaded.
+
 ## Workflow
 
 ### 1. Ingest The JD

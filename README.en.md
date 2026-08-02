@@ -58,14 +58,28 @@ npm run dev
 
 ## Install The Skill
 
-Point a `SKILL.md`-compatible agent at this repository, or install it manually for Codex:
+Point a `SKILL.md`-compatible agent at this repository, or use the repository's lifecycle manager for Codex. It copies only the Git-tracked distribution and excludes dependencies, build output, run output, and secrets:
 
 ```bash
 git clone https://github.com/Akw0od/job-master.git
-cp -R job-master ~/.codex/skills/resume-application-agent
+cd job-master
+python3 scripts/manage_skill.py install
+python3 scripts/manage_skill.py status
 ```
 
-Restart Codex so the skill registry can load [SKILL.md](./SKILL.md).
+The manager refuses to overwrite an existing destination. If `status` identifies an older copied installation as `unmanaged`, review it and explicitly migrate it with `python3 scripts/manage_skill.py update --adopt`. A recoverable copy is moved to `~/.codex/skills/.jobmaster-skill-backups/` before activation. Symlinked destinations are intentionally refused and must be reviewed and removed by the user first.
+
+Update and compare versions from a current repository checkout:
+
+```bash
+git pull --ff-only
+python3 scripts/manage_skill.py version
+python3 scripts/manage_skill.py update
+```
+
+Updates preserve `.npmrc`, `.env*`, `data/profile_context.md`, `runs/`, and `outputs/`. Other local modifications or unexpected files stop the update for review; use `--force` only after accepting that the complete old installation will be backed up. Rerun `npm install` in the checkout used for the Dashboard when its dependencies change.
+
+`python3 scripts/manage_skill.py uninstall` deactivates the Skill by moving it to the same recovery directory instead of deleting it. Restart Codex or begin a new task after any lifecycle change so the registry reloads [SKILL.md](./SKILL.md).
 
 ## Generate An Application Packet
 
@@ -98,8 +112,10 @@ Outputs:
 ```text
 .
 |-- SKILL.md
+|-- skill-release.json
 |-- data/
 |-- examples/
+|-- scripts/manage_skill.py
 |-- scripts/resume_agent.py
 |-- scripts/dev.mjs
 |-- local-agent/
